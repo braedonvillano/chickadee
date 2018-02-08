@@ -23,6 +23,12 @@ void process_main(void) {
     // stack page (this process never needs more than one stack page).
     stack_bottom = ROUNDDOWN((uint8_t*) read_rsp() - 1, PAGESIZE);
 
+    // log_printf("i am in the process and this is the console addre: %p\n", console);
+    sys_map_console(console);
+    for (int i = 0; i < CONSOLE_ROWS * CONSOLE_COLUMNS; ++i) {
+      console[i] = '*' | 0x3000;
+    }
+
     while (1) {
         if ((rand() % ALLOC_SLOWDOWN) < p) {
             if (heap_top == stack_bottom || sys_page_alloc(heap_top) < 0) {

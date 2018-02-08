@@ -127,6 +127,60 @@ void proc::exception(regstate* regs) {
     assert(this->state_ == proc::runnable);
 }
 
+int fork(proc* parent) {
+    // so lets first go through the pid table and deliver a new pid
+    auto irqs = ptable_lock.lock();
+    proc* p = nullptr;
+    pid_t pid;
+
+    for (pid_t i = 1; i < NPROC; i++) {
+        // if there is an available process
+        if (!ptable[i]) {
+            pid = i;
+            break;
+        }
+        if (i == NPROC - 1) {
+            return -1;
+        }
+    }
+    p = ptable[pid] = reinterpret_cast<proc*>(kallocpage());
+    x86_64_pagetable* npt = kalloc_pagetable();
+    p->init_user(pid, npt);
+
+    // if there was no empty process
+    if (!p || !npt) {
+        return -1;
+    }
+
+    for (vmiter it(parent); it.low(); it.next()) {
+        if (it.user()) {
+            x86_64_page* pg = kallocpage();
+            if (!pg) {
+                return -1;
+            }
+            memcpy(pg, (void*) it.va(), PAGESIZE);
+            if (vmiter(p, it.va()).map(ka2pa(pg), PTE_P | PTE_W | PTE_U) < 0) {
+                return -1;
+            }
+        }
+    }
+
+    // change child registers
+    memcpy(p->regs_, parent->regs_, sizeof(regstate));
+
+    int cpu = pid % ncpu;
+    cpus[cpu].runq_lock_.lock_noirq();
+    cpus[cpu].enqueue(p);
+    cpus[cpu].runq_lock_.unlock_noirq();
+
+    p->regs_->reg_rax = 0;
+
+    ptable_lock.unlock(irqs);
+
+    return pid;
+
+    // allocate a struct proc
+}
 
 // proc::syscall(regs)
 //    System call handler.
@@ -141,6 +195,19 @@ uintptr_t proc::syscall(regstate* regs) {
     case SYSCALL_PANIC:
         panic(NULL);
         break;                  // will not be reached
+
+    // this is to map a the console to a process (BV)
+    case SYSCALL_MAP_CONSOLE: {
+        uintptr_t addr = regs->reg_rdi;
+        if (addr >= VA_LOWMAX || addr & PAGEOFFMASK) {
+            return -1;
+        }
+        int r = vmiter(this, addr).map(ktext2pa(console), PTE_P | PTE_W | PTE_U);
+        if (r < 0) {
+            return -1;
+        }
+        return 0;
+    }
 
     case SYSCALL_GETPID:
         return pid_;
@@ -170,9 +237,11 @@ uintptr_t proc::syscall(regstate* regs) {
         return 0;
     }
 
-    case SYSCALL_FORK:
+    case SYSCALL_FORK: {
         // Your code here
-        return -1;
+        this->regs_ = regs;
+        return fork(this);
+    }
 
     default:
         // no such system call

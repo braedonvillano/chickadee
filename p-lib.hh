@@ -62,6 +62,10 @@ static inline pid_t sys_fork(void) {
     return syscall0(SYSCALL_FORK);
 }
 
+static inline int sys_map_console(void* addr) {
+    return syscall0(SYSCALL_MAP_CONSOLE, reinterpret_cast<uintptr_t>(addr));
+}
+
 // sys_exit()
 //    Exit this process. Does not return.
 static inline void sys_exit(void) __attribute__((noreturn));
