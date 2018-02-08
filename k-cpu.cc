@@ -121,5 +121,6 @@ proc* cpustate::idle_task() {
         idle_task_ = reinterpret_cast<proc*>(kallocpage());
         idle_task_->init_kernel(-1, idle);
     }
+
     return idle_task_;
 }
