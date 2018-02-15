@@ -232,7 +232,7 @@ _ZN4proc5yieldEv:
         movq %rdi, %rsi
         movq %gs:(0), %rdi
         leaq CPUSTACK_SIZE(%rdi), %rsp
-
+        subq $8, %rsp
         // call scheduler
         jmp _ZN8cpustate8scheduleEP4proc
 
@@ -247,6 +247,7 @@ _ZN4proc14yield_noreturnEv:
         leaq CPUSTACK_SIZE(%rdi), %rsp
 
         // jump to scheduler
+        subq $8, %rsp
         jmp _ZN8cpustate8scheduleEP4proc
 
 
@@ -393,6 +394,7 @@ ap_rest:
         leaq CPUSTACK_SIZE(%rdi), %rsp
         // call `cpus[my_CPU_number].init_ap()`.
         // This two-stage jump switches to high virtual addresses.
+        subq $8, %rsp
         movabsq $_ZN8cpustate7init_apEv, %rbx
         jmp *%rbx
 

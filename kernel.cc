@@ -17,6 +17,7 @@ static void process_setup(pid_t pid, const char* program_name);
 //    string is an optional string passed from the boot loader.
 
 void kernel_start(const char* command) {
+    assert(read_rbp() % 16 == 0);
     hardware_init();
     console_clear();
 
@@ -74,6 +75,7 @@ void proc::exception(regstate* regs) {
     // Events logged this way are stored in the host's `log.txt` file.
     /*log_printf("proc %d: exception %d\n", this->pid_, regs->reg_intno);*/
 
+    assert(read_rbp() % 16 == 0);
     // Show the current cursor location.
     console_show_cursor(cursorpos);
 
@@ -127,7 +129,7 @@ void proc::exception(regstate* regs) {
     assert(this->state_ == proc::runnable);
 }
 
-int fork(proc* parent) {
+int fork(proc* parent, regstate* regs) {
     // so lets first go through the pid table and deliver a new pid
     auto irqs = ptable_lock.lock();
     proc* p = nullptr;
@@ -166,7 +168,7 @@ int fork(proc* parent) {
     }
 
     // change child registers
-    memcpy(p->regs_, parent->regs_, sizeof(regstate));
+    memcpy(p->regs_, regs, sizeof(regstate));
 
     int cpu = pid % ncpu;
     cpus[cpu].runq_lock_.lock_noirq();
@@ -190,6 +192,7 @@ int fork(proc* parent) {
 //    process in `%rax`.
 
 uintptr_t proc::syscall(regstate* regs) {
+    assert(read_rbp() % 16 == 0);
     switch (regs->reg_rax) {
 
     case SYSCALL_PANIC:
@@ -239,8 +242,7 @@ uintptr_t proc::syscall(regstate* regs) {
 
     case SYSCALL_FORK: {
         // Your code here
-        this->regs_ = regs;
-        return fork(this);
+        return fork(this, regs);
     }
 
     default:

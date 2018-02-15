@@ -54,6 +54,8 @@ void cpustate::enqueue(proc* p) {
 //    run `yielding_from` unless no other runnable process exists.
 
 void cpustate::schedule(proc* yielding_from) {
+    // log_printf("baseptr: %d\n", (read_rbp() % 16));
+    assert(read_rbp() % 16 == 0);
     assert(is_cli());              // interrupts are currently disabled
     assert(spinlock_depth_ == 0);  // no spinlocks are held
 
@@ -117,6 +119,7 @@ void idle(proc*) {
 }
 
 proc* cpustate::idle_task() {
+    // assert(read_rbp() % 16 == 0);
     if (!idle_task_) {
         idle_task_ = reinterpret_cast<proc*>(kallocpage());
         idle_task_->init_kernel(-1, idle);
