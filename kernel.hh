@@ -4,12 +4,30 @@
 #include "lib.hh"
 #include "k-lock.hh"
 #include "k-memrange.hh"
+#include "k-list.hh"
 #if CHICKADEE_PROCESS
 #error "kernel.hh should not be used by process code."
 #endif
 struct elf_program;
 struct proc;
 struct yieldstate;
+struct page;
+
+// my retired implementation
+// struct page {
+//     int order;
+//     bool free;
+//     bool block_start; 
+// };
+
+// david's implementation
+struct page {
+    int pn;
+    int order;
+    bool free; // true if free, false if allocated
+    bool block; // true if start of block, false if not
+    list_links link_;
+};
 
 
 // kernel.h

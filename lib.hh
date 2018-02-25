@@ -91,6 +91,27 @@ inline constexpr int msb(unsigned long long x) {
     return x ? sizeof(x) * 8 - __builtin_clzll(x) : 0;
 }
 
+
+// return index of the least significant bit of a page 
+inline constexpr int lsb(int x) {
+    return x ? __builtin_ctz(x) : 0;
+}
+inline constexpr int lsb(unsigned x) {
+    return x ? __builtin_ctz(x) : 0;
+}
+inline constexpr int lsb(long x) {
+    return x ? __builtin_ctzl(x) : 0;
+}
+inline constexpr int lsb(unsigned long x) {
+    return x ? __builtin_ctzl(x) : 0;
+}
+inline constexpr int lsb(long long x) {
+    return x ? __builtin_ctzll(x) : 0;
+}
+inline constexpr int lsb(unsigned long long x) {
+    return x ? __builtin_ctzll(x) : 0;
+}
+
 // rounddown_pow2(x)
 //    Round x down to the nearest power of 2.
 template <typename T>
@@ -117,6 +138,7 @@ inline constexpr T roundup_pow2(T x) {
 #define SYSCALL_PAGE_ALLOC      5
 #define SYSCALL_FORK            6
 #define SYSCALL_EXIT            7
+#define SYSCALL_MAP_CONSOLE     8
 #define SYSCALL_KDISPLAY        100
 
 

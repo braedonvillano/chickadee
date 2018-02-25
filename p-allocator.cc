@@ -1,5 +1,5 @@
 #include "p-lib.hh"
-#define ALLOC_SLOWDOWN 100
+#define ALLOC_SLOWDOWN 10
 
 extern uint8_t end[];
 
@@ -22,6 +22,12 @@ void process_main(void) {
     // The bottom of the stack is the first address on the current
     // stack page (this process never needs more than one stack page).
     stack_bottom = ROUNDDOWN((uint8_t*) read_rsp() - 1, PAGESIZE);
+
+    // log_printf("i am in the process and this is the console addre: %p\n", console);
+    sys_map_console(console);
+    for (int i = 0; i < CONSOLE_ROWS * CONSOLE_COLUMNS; ++i) {
+      console[i] = '*' | 0x3000;
+    }
 
     while (1) {
         if (rand(0, ALLOC_SLOWDOWN - 1) < p) {
