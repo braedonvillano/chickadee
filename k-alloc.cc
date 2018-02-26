@@ -3,11 +3,14 @@
 #include "k-list.hh"
 #include "lib.hh"
 
-#define ARR_SZ        10
-#define MIN_ORD       12
-#define SUB_ORD       13
-#define MAX_ORD       21
-#define PAGE_ORD(x) (msb(x) - 1)
+#define ARR_SZ          10
+#define MIN_ORD         12
+#define SUB_ORD         13
+#define MAX_ORD         21
+#define ALL_PGS         512
+#define LST_IND(x)      x - MIN_ORD  
+#define PAGE_ORD(x)    (msb(x) - 1)
+#define BUD_PAGE(x, y) (x ^ (1 << y)) / PAGESIZE
 
 static spinlock page_lock;
 static uintptr_t next_free_pa;
@@ -15,6 +18,19 @@ static uintptr_t next_free_pa;
 page pages[600];
 
 struct list<page, &page::link_> lists[10];
+
+void print_struct() {
+    for (int i = 0; i < 10; i++) {
+        log_printf("List %d:  ", i + 12);
+        page* next = lists[i].front();
+        while (next) {
+            log_printf("[p: %d o: %d f: %d]", next->pn, next->order, next->free);
+            log_printf(" -> ");
+            next = lists[i].next(next);
+        }
+        log_printf("null\n");
+    }
+}
 
 x86_64_page* kallocpage() {
     // auto irqs = page_lock.lock();
@@ -39,6 +55,10 @@ x86_64_page* kallocpage() {
     // page_lock.unlock(irqs);
     // return p;
 
+    void* p = kalloc(PAGESIZE);
+
+    kfree(p);
+
     return reinterpret_cast<x86_64_page*>(kalloc(PAGESIZE));
 }
 
@@ -51,13 +71,13 @@ void init_kalloc() {
     auto irqs = page_lock.lock();
 
     // initialize the pages array
-    for (int i = 0; i < 512; ++i) {
+    for (int i = 0; i < ALL_PGS; ++i) {
         pages[i].pn = i;
         pages[i].order = -1;
         pages[i].free = false;
         pages[i].block = false;
     }
-    
+
     int pn, blk_ord;
     uintptr_t curr_pa = 0;
     // we can make this better by using lsb to check the alignment?
@@ -101,16 +121,9 @@ void init_kalloc() {
     // }
 }
 
-// void update_pages(int free, int ord, int pgs, int strt) {
-//     for (int i = start; i < pgs; i++) {
-//         if (free) pages[i].free = free;
-//         if (ord) pages[i].order = ord;
-//     }
-// }
-
-
-
-// BRAEDON'S VERSION OF KALLOC (CLEAN)
+// kalloc(sz)
+//    Allocate and return a pointer to at least `sz` contiguous bytes
+//    of memory. Returns `nullptr` if `sz == 0` or on failure.
 void* kalloc(size_t sz) {    
     int req_ord = PAGE_ORD(sz) > MIN_ORD ? PAGE_ORD(sz) : MIN_ORD;
     int n = req_ord - MIN_ORD;
@@ -123,8 +136,8 @@ void* kalloc(size_t sz) {
         assert(p->free && p->block);
         int pn = p->pn;
         int pgs = 1 << n;
-        for (int i = 0; i < pgs; i++) {
-            pages[pn + i].free = false;
+        for (int i = pn; i < pn + pgs; i++) {
+            pages[i].free = false;
         }
         page_lock.unlock(irqs);
         return (void*) pa2ka(pn * PAGESIZE);
@@ -160,116 +173,54 @@ void* kalloc(size_t sz) {
     }
     // mark the remaining block and return
     int npages = 1 << (ret_ord - MIN_ORD);
-    for (int k = pgn; k < npages; k++) {
+    for (int k = pgn; k < pgn + npages; k++) {
         pages[k].free = false;
         pages[k].order = ret_ord;
     }
     page_lock.unlock(irqs);
-
     return (void*) pa2ka(block->pn * PAGESIZE);
 }
-
-// kalloc(sz)
-//    Allocate and return a pointer to at least `sz` contiguous bytes
-//    of memory. Returns `nullptr` if `sz == 0` or on failure.
-// void* kalloc(size_t sz) {
-
-//     auto irqs = page_lock.lock();
-
-//     int order = msb(sz)-1;
-//     // log_printf("requested order is %d\n",order);
-//     if (order > MAX_ORD  || sz == 0){
-//         return nullptr;
-//     }
-
-//     if (order < MIN_ORD){
-//         order = 12;
-//     }
-
-//     int n = order - 12;
-//     int num_pgs = 1 << n;
-
-//     if (!lists[n].empty()){
-//         page* p = lists[n].pop_front();
-//         assert(p->free);
-
-//         int pn = p->pn;
-
-//         for (int i = 0; i < num_pgs; ++i){
-//             pages[pn+i].free = false;
-//         }
-
-//         log_printf("allocated p at addr %u\n",p);
-
-//         for (int t = 0; t < 10; ++t){
-//             for (page* p1 = lists[t].front(); p1; p1 = lists[t].next(p1)) {
-//                 log_printf("pn %d order %d is in list 1%d\n", p1->pn,p1->order,t+2);
-//             }
-//         }
-
-//         page_lock.unlock(irqs);
-
-//         return (void*) pa2ka (pn*PAGESIZE);
-//     }
-
-//     for (int i = n + 1; i < 10; ++i){
-        
-//         if (!lists[i].empty()){
-
-//             page* p = lists[i].pop_front();
-//             assert(p->free);
-
-//             int pn = p->pn;
-
-//             for (int j = i + 12; j >= order; --j){
-
-//                 if (j == order){
-
-//                     for (int l = 0; l < num_pgs; ++l){
-//                         pages[pn+l].free = false;
-//                     }
-
-//                     log_printf("allocated p is at addr %u\n",p);
-
-//                     for (int t = 0; t < 10; ++t){
-//                         for (page* p1 = lists[t].front(); p1; p1 = lists[t].next(p1)) {
-//                             log_printf("pn %d order %d is in list 1%d\n", p1->pn,p1->order,t+2);
-//                         }
-//                     }
-
-//                     page_lock.unlock(irqs);
-
-//                     return (void*) pa2ka(pn*PAGESIZE);
-
-//                 } else {
-
-//                     int pages_to_break_pt = 1 << (j - 13);
-
-//                     int pn2 = pn + pages_to_break_pt;
-
-//                     pages[pn2].block_start = true;
-
-//                     pages[pn2].link_.clear();
-//                     lists[j-13].push_back(&pages[pn2]);
-
-//                     for (int k = 0; k < (2*pages_to_break_pt); ++k){
-//                         --pages[pn+k].order;
-//                     }
-//                 }               
-//             }
-//         }
-//     }
-
-//     page_lock.unlock(irqs);
-
-//     return nullptr;
-// }
 
 // kfree(ptr)
 //    Free a pointer previously returned by `kalloc`, `kallocpage`, or
 //    `kalloc_pagetable`. Does nothing if `ptr == nullptr`.
 void kfree(void* ptr) {
-    assert(0 && "kfree not implemented yet");
+    if (!ptr) return;
+    auto irqs = page_lock.lock();
+
+    uintptr_t addr = ka2pa(ptr);
+    int pgn = addr / PAGESIZE;
+    assert(pgn <= ALL_PGS);
+    assert(pages[pgn].block);
+    // mark the block before coalescing
+    int ord = pages[pgn].order;
+    int num_pgs = (1 << ord) / PAGESIZE;
+    for (int i = pgn; i < pgn + num_pgs; i++) {
+        pages[i].free = true;
+    }
+    // find all buddies and coalesce them
+    for (ord; ord < MAX_ORD; ord++) {
+        int b_pgn = BUD_PAGE(addr, ord);
+        if (b_pgn < 0 || b_pgn > ALL_PGS) break; 
+        if (!pages[b_pgn].free || pages[b_pgn].order != ord) break;
+        // remove buddy from list and reorder
+        pages[b_pgn].link_.erase();
+        int start = MIN(pgn, b_pgn);
+        int mid = MAX(pgn, b_pgn);
+        int half_pgs = (1 << ord) / PAGESIZE;
+        // mark the new, coalesced block
+        pages[start].block = true;
+        pages[mid].block = false;
+        for (int j = start; j < mid + half_pgs; j++) {
+            assert(pages[j].free);
+            pages[j].order++;
+        }
+        addr = start * PAGESIZE;
+        pgn = start;
+    }
+    pages[pgn].link_.clear();
+    lists[ord - MIN_ORD].push_back(&pages[pgn]);
+    page_lock.unlock(irqs);
 }
 
 // test_kalloc

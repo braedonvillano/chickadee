@@ -337,6 +337,6 @@ void init_other_processors() {
     // Now that `ap_init_allowed` is false, no further CPUs will
     // initialize.
     for (int i = 0; i < ncpu; ++i) {
-        log_printf("CPU %d: LAPIC ID %d\n", i, cpus[i].lapic_id_);
+        // log_printf("CPU %d: LAPIC ID %d\n", i, cpus[i].lapic_id_);
     }
 }
