@@ -55,14 +55,8 @@ x86_64_page* kallocpage() {
     // page_lock.unlock(irqs);
     // return p;
 
-    void* p = kalloc(PAGESIZE);
-
-    kfree(p);
-
     return reinterpret_cast<x86_64_page*>(kalloc(PAGESIZE));
 }
-
-
 
 // init_kalloc
 //    Initialize stuff needed by `kalloc`. Called from `init_hardware`,
@@ -190,12 +184,14 @@ void kfree(void* ptr) {
 
     uintptr_t addr = ka2pa(ptr);
     int pgn = addr / PAGESIZE;
+    assert(lsb(addr) >= 12);
     assert(pgn <= ALL_PGS);
     assert(pages[pgn].block);
     // mark the block before coalescing
     int ord = pages[pgn].order;
     int num_pgs = (1 << ord) / PAGESIZE;
     for (int i = pgn; i < pgn + num_pgs; i++) {
+        assert(!pages[i].free);
         pages[i].free = true;
     }
     // find all buddies and coalesce them
