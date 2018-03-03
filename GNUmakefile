@@ -44,7 +44,7 @@ BOOT_OBJS = $(OBJDIR)/bootentry.o $(OBJDIR)/boot.o
 
 KERNEL_OBJS = $(OBJDIR)/k-exception.ko \
 	$(OBJDIR)/kernel.ko $(OBJDIR)/k-alloc.ko $(OBJDIR)/k-vmiter.ko \
-	$(OBJDIR)/k-init.ko $(OBJDIR)/k-hardware.ko \
+	$(OBJDIR)/k-init.ko $(OBJDIR)/k-hardware.ko $(OBJDIR)/k-devices.ko \
 	$(OBJDIR)/k-cpu.ko $(OBJDIR)/k-proc.ko \
 	$(OBJDIR)/k-memviewer.ko $(OBJDIR)/lib.ko
 
@@ -52,13 +52,27 @@ PROCESS_LIB_OBJS = $(OBJDIR)/lib.o $(OBJDIR)/p-lib.o
 PROCESS_OBJS = $(PROCESS_LIB_OBJS) \
 	$(OBJDIR)/p-allocator.o \
 	$(OBJDIR)/p-allocexit.o \
+	$(OBJDIR)/p-cat.o \
+	$(OBJDIR)/p-testeintr.o \
 	$(OBJDIR)/p-testmsleep.o \
-	$(OBJDIR)/p-testppid.o
+	$(OBJDIR)/p-testpipe.o \
+	$(OBJDIR)/p-testppid.o \
+	$(OBJDIR)/p-testrwaddr.o \
+	$(OBJDIR)/p-testvfs.o \
+	$(OBJDIR)/p-testwaitpid.o \
+	$(OBJDIR)/p-testzombie.o
 
 FLATFS_CONTENTS = obj/p-allocator \
 	obj/p-allocexit \
+	obj/p-cat \
+	obj/p-testeintr \
 	obj/p-testmsleep \
-	obj/p-testppid
+	obj/p-testpipe \
+	obj/p-testppid \
+	obj/p-testrwaddr \
+	obj/p-testvfs \
+	obj/p-testwaitpid \
+	obj/p-testzombie
 
 
 # Define `CHICKADEE_FIRST_PROCESS` if appropriate
@@ -66,7 +80,7 @@ ifneq ($(filter run-%,$(MAKECMDGOALS)),)
 ifeq ($(words $(MAKECMDGOALS)),1)
 RUNCMD_LASTWORD := $(lastword $(subst -, ,$(MAKECMDGOALS)))
 ifneq ($(filter obj/p-$(RUNCMD_LASTWORD),$(FLATFS_CONTENTS)),)
-CPPFLAGS += -DCHICKADEE_FIRST_PROCESS='"p-$(RUNCMD_LASTWORD)"'
+CPPFLAGS += -DCHICKADEE_FIRST_PROCESS='"$(RUNCMD_LASTWORD)"'
 DEFAULTIMAGE = $(IMAGE)
 $(OBJDIR)/kernel.ko: always
 endif

@@ -36,13 +36,13 @@ void process_main() {
         assert(sys_getppid() == 1);
     }
 
-    if (sys_getpid() != original) {
+    sys_msleep(50);
+    if (sys_getpid() == original) {
+        console_printf("ppid tests without exit succeed\n");
+    } else {
         sys_exit(0);
     }
 
-    // Original process: Delay so others can run tests
-    sys_msleep(50);
-    console_printf("ppid tests without exit succeed\n");
 
     // Tests that implicate `exit` behavior
     assert(original != 1);
@@ -88,7 +88,10 @@ void process_main() {
         sys_exit(0);
     }
 
-    sys_msleep(300);
+    for (int i = 0; i != 6; ++i) {
+        sys_msleep(50); // loop because a long `msleep` could be interrupted
+    }
     console_printf("ppid tests with exit succeed\n");
+    console_printf("testppid succeeded.\n");
     sys_exit(0);
 }

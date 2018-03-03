@@ -1,7 +1,8 @@
-#ifndef CHICKADEE_KERNEL_H
-#define CHICKADEE_KERNEL_H
+#ifndef CHICKADEE_KERNEL_HH
+#define CHICKADEE_KERNEL_HH
 #include "x86-64.h"
 #include "lib.hh"
+#include "k-list.hh"
 #include "k-lock.hh"
 #include "k-memrange.hh"
 #include "k-list.hh"
@@ -30,9 +31,60 @@ struct page {
 };
 
 
-// kernel.h
+// kernel.hh
 //
 //    Functions, constants, and definitions for the kernel.
+
+
+// Process descriptor type
+struct __attribute__((aligned(4096))) proc {
+    // These three members must come first:
+    pid_t pid_;                        // process ID
+    regstate* regs_;                   // process's current registers
+    yieldstate* yields_;               // process's current yield state
+
+    enum state_t {
+        blank = 0, runnable, blocked, broken
+    };
+    state_t state_;                    // process state
+    x86_64_pagetable* pagetable_;      // process's page table
+
+    list_links runq_links_;
+
+
+    proc();
+    NO_COPY_OR_ASSIGN(proc);
+
+    inline bool contains(uintptr_t addr) const;
+    inline bool contains(void* ptr) const;
+
+    void init_user(pid_t pid, x86_64_pagetable* pt);
+    void init_kernel(pid_t pid, void (*f)(proc*));
+    int load(const char* binary_name);
+
+    void exception(regstate* reg);
+    uintptr_t syscall(regstate* reg);
+
+    void yield();
+    void yield_noreturn() __attribute__((noreturn));
+    void resume() __attribute__((noreturn));
+
+    inline bool resumable() const;
+
+    inline irqstate lock_pagetable_read();
+    inline void unlock_pagetable_read(irqstate& irqs);
+
+ private:
+    int load_segment(const elf_program* ph, const uint8_t* data);
+};
+
+#define NPROC 16
+extern proc* ptable[NPROC];
+extern spinlock ptable_lock;
+#define KTASKSTACK_SIZE  4096
+
+// allocate a new `proc` and call its constructor
+proc* kalloc_proc();
 
 
 // CPU state type
@@ -45,8 +97,7 @@ struct __attribute__((aligned(4096))) cpustate {
     int index_;
     int lapic_id_;
 
-    proc* runq_head_;
-    proc* runq_tail_;
+    list<proc, &proc::runq_links_> runq_;
     spinlock runq_lock_;
     unsigned long nschedule_;
     proc* idle_task_;
@@ -71,6 +122,9 @@ struct __attribute__((aligned(4096))) cpustate {
     void enqueue(proc* p);
     void schedule(proc* yielding_from) __attribute__((noreturn));
 
+    void enable_irq(int irqno);
+    void disable_irq(int irqno);
+
  private:
     void init_cpu_hardware();
     void init_idle_task();
@@ -82,55 +136,6 @@ extern int ncpu;
 #define CPUSTACK_SIZE 4096
 
 inline cpustate* this_cpu();
-
-
-// Process descriptor type
-struct __attribute__((aligned(4096))) proc {
-    // These three members must come first:
-    pid_t pid_;                        // process ID
-    regstate* regs_;                   // process's current registers
-    yieldstate* yields_;               // process's current yield state
-
-    enum state_t {
-        blank = 0, runnable, blocked, broken
-    };
-    state_t state_;                    // process state
-    x86_64_pagetable* pagetable_;      // process's page table
-
-    proc** runq_pprev_;
-    proc* runq_next_;
-
-
-    proc();
-    NO_COPY_OR_ASSIGN(proc);
-
-    inline bool contains(uintptr_t addr) const;
-    inline bool contains(void* ptr) const;
-
-    void init_user(pid_t pid, x86_64_pagetable* pt);
-    void init_kernel(pid_t pid, void (*f)(proc*));
-    int load(const char* binary_name);
-
-    void exception(regstate* reg);
-    uintptr_t syscall(regstate* reg);
-
-    void yield();
-    void yield_noreturn() __attribute__((noreturn));
-    void resume() __attribute__((noreturn));
-
-    inline bool resumable() const;
-
- private:
-    int load_segment(const elf_program* ph, const uint8_t* data);
-};
-
-#define NPROC 16
-extern proc* ptable[NPROC];
-extern spinlock ptable_lock;
-#define KTASKSTACK_SIZE  4096
-
-// allocate a new `proc` and call its constructor
-proc* kalloc_proc();
 
 
 // yieldstate: callee-saved registers that must be preserved across
@@ -282,6 +287,50 @@ void* kalloc(size_t sz);
 //    `kalloc_pagetable`. Does nothing if `ptr == nullptr`.
 void kfree(void* ptr);
 
+// knew<T>()
+//    Return a pointer to a newly-allocated object of type `T`. Calls
+//    the new object's constructor. Returns `nullptr` on failure.
+template <typename T>
+inline T* knew() {
+    if (void* mem = kalloc(sizeof(T))) {
+        return new (mem) T;
+    } else {
+        return nullptr;
+    }
+}
+
+// kdelete(ptr)
+//    Free an object allocated by `knew`. Calls the object's destructor.
+template <typename T>
+void kdelete(T* obj) {
+    if (obj) {
+        obj->~T();
+        kfree(obj);
+    }
+}
+
+// operator new, operator delete
+//    Expressions like `new (std::nothrow) T(...)` and `delete x` work,
+//    and call kalloc/kfree.
+inline void* operator new(size_t sz, const std::nothrow_t&) noexcept {
+    return kalloc(sz);
+}
+inline void* operator new[](size_t sz, const std::nothrow_t&) noexcept {
+    return kalloc(sz);
+}
+inline void operator delete(void* ptr) noexcept {
+    kfree(ptr);
+}
+inline void operator delete(void* ptr, size_t) noexcept {
+    kfree(ptr);
+}
+inline void operator delete[](void* ptr) noexcept {
+    kfree(ptr);
+}
+inline void operator delete[](void* ptr, size_t) noexcept {
+    kfree(ptr);
+}
+
 // init_kalloc
 //    Initialize stuff needed by `kalloc`. Called from `init_hardware`,
 //    after `physical_ranges` is initialized.
@@ -322,33 +371,6 @@ void kernel_start(const char* command);
 void console_show_cursor(int cpos);
 
 
-// keyboard_readc
-//    Read a character from the keyboard. Returns -1 if there is no character
-//    to read, and 0 if no real key press was registered but you should call
-//    keyboard_readc() again (e.g. the user pressed a SHIFT key). Otherwise
-//    returns either an ASCII character code or one of the special characters
-//    listed below.
-int keyboard_readc();
-
-#define KEY_UP          0300
-#define KEY_RIGHT       0301
-#define KEY_DOWN        0302
-#define KEY_LEFT        0303
-#define KEY_HOME        0304
-#define KEY_END         0305
-#define KEY_PAGEUP      0306
-#define KEY_PAGEDOWN    0307
-#define KEY_INSERT      0310
-#define KEY_DELETE      0311
-
-// check_keyboard
-//    Check for the user typing a control key. 'a', 'f', and 'e' cause a soft
-//    reboot where the kernel runs the allocator programs, "fork", or
-//    "forkexit", respectively. Control-C or 'q' exit the virtual machine.
-//    Returns key typed or -1 for no key.
-int check_keyboard();
-
-
 // program_load(p, programnumber)
 //    Load the code corresponding to program `programnumber` into the process
 //    `p` and set `p->p_reg.reg_eip` to its entry point. Calls
@@ -379,8 +401,8 @@ void error_printf(const char* format, ...) __attribute__((noinline));
 int error_vprintf(int cpos, int color, const char* format, va_list val)
     __attribute__((noinline));
 
-// `panicing == true` iff some CPU has paniced
-extern bool panicing;
+// `panicking == true` iff some CPU has panicked
+extern bool panicking;
 
 
 // this_cpu
@@ -389,6 +411,14 @@ inline cpustate* this_cpu() {
     assert(is_cli());
     cpustate* result;
     asm volatile ("movq %%gs:(0), %0" : "=r" (result));
+    return result;
+}
+
+// current
+//    Return a pointer to the current `struct proc`.
+inline proc* current() {
+    proc* result;
+    asm volatile ("movq %%gs:(8), %0" : "=r" (result));
     return result;
 }
 
@@ -430,6 +460,16 @@ inline bool proc::resumable() const {
     assert(!regs_ || contains(regs_));      // `regs_` points within this
     assert(!yields_ || contains(yields_));  // same for `yields_`
     return regs_ || yields_;
+}
+
+// proc::lock_pagetable_read()
+//    Obtain a “read lock” on this process’s page table. While the “read
+//    lock” is held, it is illegal to remove or change existing valid
+//    mappings in that page table, or to free page table pages.
+inline irqstate proc::lock_pagetable_read() {
+    return irqstate();
+}
+inline void proc::unlock_pagetable_read(irqstate&) {
 }
 
 #endif

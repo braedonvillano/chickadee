@@ -1,4 +1,5 @@
 #include "kernel.hh"
+#include "k-apic.hh"
 
 cpustate cpus[NCPU];
 int ncpu;
@@ -27,8 +28,6 @@ void cpustate::init() {
     self_ = this;
     current_ = nullptr;
     index_ = this - cpus;
-    runq_head_ = nullptr;
-    runq_tail_ = nullptr;
     runq_lock_.clear();
     idle_task_ = nullptr;
     nschedule_ = 0;
@@ -39,17 +38,34 @@ void cpustate::init() {
 }
 
 
+// cpustate::enable_irq(irqno)
+//    Enable external interrupt `irqno`, delivering it to
+//    this CPU.
+void cpustate::enable_irq(int irqno) {
+    assert(irqno >= IRQ_TIMER && irqno <= IRQ_SPURIOUS);
+    auto& ioapic = ioapicstate::get();
+    ioapic.enable_irq(irqno, INT_IRQ + irqno, lapic_id_);
+}
+
+// cpustate::disable_irq(irqno)
+//    Disable external interrupt `irqno`.
+void cpustate::disable_irq(int irqno) {
+    assert(irqno >= IRQ_TIMER && irqno <= IRQ_SPURIOUS);
+    auto& ioapic = ioapicstate::get();
+    ioapic.disable_irq(irqno);
+}
+
+
 // cpustate::enqueue(p)
-//    Enqueue `p` on this CPU's run queue. `p` must not be on any
-//    run queue, it must be resumable (or not runnable), and
-//    `this->runq_lock_` must be held.
+//    Enqueue `p` on this CPU's run queue. Does nothing if `p` is
+//    already on some run queue. `p` must be resumable (or not
+//    runnable), and `this->runq_lock_` must be held.
 
 void cpustate::enqueue(proc* p) {
     assert(p->resumable() || p->state_ != proc::runnable);
-    assert(!p->runq_pprev_);
-    p->runq_pprev_ = runq_head_ ? &runq_tail_->runq_next_ : &runq_head_;
-    p->runq_next_ = nullptr;
-    *p->runq_pprev_ = runq_tail_ = p;
+    if (!p->runq_links_.is_linked()) {
+        runq_.push_back(p);
+    }
 }
 
 
@@ -94,17 +110,9 @@ void cpustate::schedule(proc* yielding_from) {
             // switch to a safe page table
             lcr3(ktext2pa(early_pagetable));
         }
-        if (runq_head_) {
+        if (!runq_.empty()) {
             // pop head of run queue into `current_`
-            current_ = runq_head_;
-            runq_head_ = runq_head_->runq_next_;
-            if (runq_head_) {
-                runq_head_->runq_pprev_ = &runq_head_;
-            } else {
-                runq_tail_ = nullptr;
-            }
-            current_->runq_next_ = nullptr;
-            current_->runq_pprev_ = nullptr;
+            current_ = runq_.pop_front();
         }
         runq_lock_.unlock_noirq();
 

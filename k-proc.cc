@@ -19,7 +19,12 @@ proc::proc()
 //    Allocate and return a new `proc`. Calls the constructor.
 
 proc* kalloc_proc() {
-    void* ptr = kallocpage();
+    void* ptr;
+    if (sizeof(proc) <= PAGESIZE) {
+        ptr = kallocpage();
+    } else {
+        ptr = kalloc(sizeof(proc));
+    }
     if (ptr) {
         return new (ptr) proc;
     } else {
@@ -60,9 +65,6 @@ void proc::init_user(pid_t pid, x86_64_pagetable* pt) {
     state_ = proc::runnable;
 
     pagetable_ = pt;
-
-    runq_pprev_ = nullptr;
-    runq_next_ = nullptr;
 }
 
 
@@ -91,9 +93,6 @@ void proc::init_kernel(pid_t pid, void (*f)(proc*)) {
     state_ = proc::runnable;
 
     pagetable_ = early_pagetable;
-
-    runq_pprev_ = nullptr;
-    runq_next_ = nullptr;
 }
 
 
