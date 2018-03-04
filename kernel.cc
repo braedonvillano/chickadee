@@ -29,7 +29,7 @@ void kernel_start(const char* command) {
     }
 
     auto irqs = ptable_lock.lock();
-    process_setup(1, "allocator");
+    process_setup(1, "allocexit");
     ptable_lock.unlock(irqs);
 
     // Switch to the first process
@@ -59,6 +59,8 @@ void process_setup(pid_t pid, const char* name) {
     x86_64_page* stkpg = kallocpage();
     assert(stkpg);
     r = vmiter(p, MEMSIZE_VIRTUAL - PAGESIZE).map(ka2pa(stkpg));
+    assert(r >= 0);
+    r = vmiter(p, ktext2pa(console)).map(ktext2pa(console), PTE_P | PTE_W | PTE_U);
     assert(r >= 0);
 
     int cpu = pid % ncpu;
@@ -149,44 +151,56 @@ int fork(proc* parent, regstate* regs) {
             break;
         }
         if (i == NPROC - 1) {
+            ptable_lock.unlock(irqs);
             return -1;
         }
     }
     p = ptable[pid] = reinterpret_cast<proc*>(kallocpage());
     x86_64_pagetable* npt = kalloc_pagetable();
-    p->init_user(pid, npt);
-
     // if there was no empty process
     if (!p || !npt) {
+        ptable_lock.unlock(irqs);
         return -1;
     }
+    p->init_user(pid, npt);
 
     for (vmiter it(parent); it.low(); it.next()) {
         if (it.user()) {
             x86_64_page* pg = kallocpage();
             if (!pg) {
+                ptable_lock.unlock(irqs);
                 return -1;
             }
             memcpy(pg, (void*) it.va(), PAGESIZE);
             if (vmiter(p, it.va()).map(ka2pa(pg), PTE_P | PTE_W | PTE_U) < 0) {
+                ptable_lock.unlock(irqs);
                 return -1;
             }
         }
     }
-
-    // change child registers
     memcpy(p->regs_, regs, sizeof(regstate));
-
     int cpu = pid % ncpu;
     cpus[cpu].runq_lock_.lock_noirq();
     cpus[cpu].enqueue(p);
     cpus[cpu].runq_lock_.unlock_noirq();
-
+    // set the return register
     p->regs_->reg_rax = 0;
+    ptable_lock.unlock(irqs);
+    return pid;
+}
+
+int exit(proc* proc) {
+    auto irqs = ptable_lock.lock();
+
+    pid_t pid = proc->pid_;
+    ptable[pid] = nullptr;
+
+    // itereate over virtual memory and free?
+
+    // i know that i need to iterate over physical...
 
     ptable_lock.unlock(irqs);
-
-    return pid;
+    return 0;
 }
 
 
@@ -236,6 +250,12 @@ uintptr_t proc::syscall(regstate* regs) {
             pause();
         }
         cli();
+        return 0;
+    }
+
+    case SYSCALL_EXIT: {
+        // exit(this);
+        log_printf("im a lil bich\n");
         return 0;
     }
 

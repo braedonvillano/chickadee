@@ -14,14 +14,11 @@ struct proc;
 struct yieldstate;
 struct page;
 
-// my retired implementation
-// struct page {
-//     int order;
-//     bool free;
-//     bool block_start; 
-// };
+// kernel.hh
+//
+//    Functions, constants, and definitions for the kernel.
 
-// david's implementation
+// used for buddy allocators and pages array
 struct page {
     int pn;
     int order;
@@ -29,12 +26,6 @@ struct page {
     bool block; // true if start of block, false if not
     list_links link_;
 };
-
-
-// kernel.hh
-//
-//    Functions, constants, and definitions for the kernel.
-
 
 // Process descriptor type
 struct __attribute__((aligned(4096))) proc {

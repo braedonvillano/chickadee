@@ -87,7 +87,7 @@ void init_kalloc() {
             pn = curr_pa / PAGESIZE;
             pages[pn].block = true;
             // add the block to apropriate list
-            pages[pn].link_.clear();
+            pages[pn].link_.reset();
             lists[blk_ord - MIN_ORD].push_back(&pages[pn]);
             // update block-associated pages 
             int num_pgs = 1 << (blk_ord - MIN_ORD);
@@ -162,7 +162,7 @@ void* kalloc(size_t sz) {
             --pages[l].order;
         }
         pages[nxt].block = true;
-        pages[nxt].link_.clear();
+        pages[nxt].link_.reset();
         lists[indx].push_back(&pages[nxt]);
     }
     // mark the remaining block and return
@@ -214,7 +214,7 @@ void kfree(void* ptr) {
         addr = start * PAGESIZE;
         pgn = start;
     }
-    pages[pgn].link_.clear();
+    pages[pgn].link_.reset();
     lists[ord - MIN_ORD].push_back(&pages[pgn]);
     page_lock.unlock(irqs);
 }
