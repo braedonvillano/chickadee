@@ -223,8 +223,8 @@ int fork(proc* parent, regstate* regs) {
     memcpy(p->regs_, regs, sizeof(regstate));
     // reparent the new process
     p->ppid_ = parent->pid_;
-    p->child_links_.reset();
-    parent->child_list.push_front(p);
+    // p->child_links_.reset();
+    // parent->child_list.push_front(p);
     // put the proc on the runq
     int cpu = pid % ncpu;
     cpus[cpu].runq_lock_.lock_noirq();
