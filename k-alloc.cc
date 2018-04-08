@@ -90,20 +90,6 @@ void init_kalloc() {
     }
 
     page_lock.unlock(irqs);
-
-
-    // TESTING FOR THIS FUNCTION (CAN BE REMOVED)
-
-    // for (int t = 0; t < 512; ++t){
-    //     log_printf("pn is %d, order is %d, free is %d, block_start is %d\n", 
-    //         t, pages[t].order, pages[t].free, pages[t].block);
-    // }
-
-    // for (int t = 0; t < 10; t++) {
-    //     for (page* p = lists[t].front(); p; p = lists[t].next(p)) {
-    //         log_printf("pn %d order %d is in list %d\n", p->pn, p->order, t + 12);
-    //     }
-    // }
 }
 
 // kalloc(sz)

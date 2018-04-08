@@ -43,9 +43,9 @@ struct __attribute__((aligned(4096))) proc {
 
     list_links runq_links_;
 
-    list_links child_link_;            // link for child pids
+    list_links child_links_;            // link for child pids
 
-    list<proc, &proc::child_link_> child_list;
+    list<proc, &proc::child_links_> child_list;
 
     proc();
     NO_COPY_OR_ASSIGN(proc);

@@ -2,6 +2,7 @@
 #include "k-apic.hh"
 #include "k-devices.hh"
 #include "k-vmiter.hh"
+#define INIT_PID 1
 
 // kernel.cc
 //
@@ -12,6 +13,7 @@ int kdisplay;                   // type of display
 
 static void kdisplay_ontick();
 static void process_setup(pid_t pid, const char* program_name);
+static void build_init_proc();
 
 int exit(proc* proc);
 
@@ -30,12 +32,40 @@ void kernel_start(const char* command) {
         ptable[i] = nullptr;
     }
 
+    // make the initial process
+    build_init_proc();
     auto irqs = ptable_lock.lock();
-    process_setup(1, "allocexit");
+    process_setup(2, "allocexit");
     ptable_lock.unlock(irqs);
 
-    // Switch to the first process
+    // switch to the first process
     cpus[0].schedule(nullptr);
+}
+
+// this function builds the init process for reparenting
+void build_init_proc() {
+    assert(!ptable[INIT_PID]);
+    proc* p = ptable[INIT_PID] = kalloc_proc();
+    x86_64_pagetable* npt = kalloc_pagetable();
+    assert(p && npt);
+    p->init_user(INIT_PID, npt);
+
+    p->ppid_ = INIT_PID;
+
+    int r = p->load("initproc");
+    assert(r >= 0);
+    p->regs_->reg_rsp = MEMSIZE_VIRTUAL;
+    x86_64_page* stkpg = kallocpage();
+    assert(stkpg);
+    r = vmiter(p, MEMSIZE_VIRTUAL - PAGESIZE).map(ka2pa(stkpg));
+    assert(r >= 0);
+    r = vmiter(p, ktext2pa(console)).map(ktext2pa(console), PTE_P | PTE_W | PTE_U);
+    assert(r >= 0);
+
+    int cpu = INIT_PID % ncpu;
+    cpus[cpu].runq_lock_.lock_noirq();
+    cpus[cpu].enqueue(p);
+    cpus[cpu].runq_lock_.unlock_noirq();
 }
 
 
@@ -54,8 +84,10 @@ void process_setup(pid_t pid, const char* name) {
     x86_64_pagetable* npt = kalloc_pagetable();
     assert(p && npt);
     p->init_user(pid, npt);
-    // idk if this is ok or not! probs isnt, but its working...
-    p->ppid_ = 1;
+
+    p->ppid_ = INIT_PID;
+    p->child_links_.reset();
+    ptable[INIT_PID]->child_list.push_front(p);
 
     int r = p->load(name);
     assert(r >= 0);
@@ -156,54 +188,86 @@ int fork(proc* parent, regstate* regs) {
     x86_64_pagetable* npt = kalloc_pagetable();
     // if there were no empty processes
     if (!pid || !p || !npt) {
-        kfree(p); kfree(npt);
         ptable[pid] = nullptr;
         ptable_lock.unlock(irqs);
+        kfree(p); kfree(npt);
         return -1;
-    }
+    }    
     p->init_user(pid, npt);
+    ptable_lock.unlock(irqs);
+
     // loop through virtual memory and copy to child
     for (vmiter it(parent); it.low(); it.next()) {
         if (!it.user() || !it.present()) continue;
         if (it.pa() == ktext2pa(console)) {
             if (vmiter(p, it.va()).map(ktext2pa(console)) < 0) {
-                ptable_lock.unlock(irqs);
-                kfree(p); kfree(npt); exit(p);
+                // ptable_lock.unlock(irqs);
+                exit(p); kfree(p); kfree(npt);
                 return -1;
             }
             continue;
         }
         x86_64_page* pg = kallocpage();
         if (!pg) {
-            ptable_lock.unlock(irqs);
-            kfree(p); kfree(npt); kfree(pg); exit(p);
+            // ptable_lock.unlock(irqs);
+            exit(p); kfree(p); kfree(npt); kfree(pg); 
             return -1;
         }
         memcpy(pg, (void*) it.ka(), PAGESIZE);
         if (vmiter(p, it.va()).map(ka2pa(pg), it.perm()) < 0) {
-            ptable_lock.unlock(irqs);
-            kfree(p); kfree(npt); kfree(pg); exit(p);
+            // ptable_lock.unlock(irqs);
+            exit(p); kfree(p); kfree(npt); kfree(pg); 
             return -1;
         }
     }
     memcpy(p->regs_, regs, sizeof(regstate));
+    // reparent the new process
     p->ppid_ = parent->pid_;
+    p->child_links_.reset();
+    parent->child_list.push_front(p);
+    // put the proc on the runq
     int cpu = pid % ncpu;
     cpus[cpu].runq_lock_.lock_noirq();
     cpus[cpu].enqueue(p);
     cpus[cpu].runq_lock_.unlock_noirq();
-    // set the return register
     p->regs_->reg_rax = 0;
-    ptable_lock.unlock(irqs);
+    // ptable_lock.unlock(irqs);
     return pid;
 }
 
 int exit(proc* proc) {
     auto irqs = ptable_lock.lock();
-
     pid_t pid = proc->pid_;
     proc->state_ = proc::exited;
     ptable[pid] = nullptr;
+    ptable_lock.unlock(irqs);
+    assert(!ptable[pid]);
+
+
+
+    // reparent the children of america lololololol --- kill me
+    /* auto irqs_phl = ptable_lock.lock();
+    
+    // loop through all children
+    // I ALSO NEED TO PARENT THE CHILDREN TO START WITH IN FORK
+    assert(proc);
+    auto init_p = nullptr;
+    auto p_ = proc->child_list.front();
+    while (!p_) {
+
+    // for (auto p_ = proc->child_list.front(); p_; p_ = proc->child_list.next(p_)) {
+        init_p = ptable[INIT_PID];
+        p_->ppid_ = 0;
+        init_p->child_list.push_front(p_);
+    // }
+
+        p_ = child_list.next(p_);
+    }
+
+    ptable_lock.unlock(irqs_phl); */
+
+
+
     // free the process's memory 
     for (vmiter it(proc); it.low(); it.next()) {
         if (it.user() && it.present() && it.pa() != ktext2pa(console)) { 
@@ -214,7 +278,6 @@ int exit(proc* proc) {
     for (ptiter it(proc); it.low(); it.next()) {
         kfree((void*) pa2ka(it.ptp_pa()));
     }
-    ptable_lock.unlock(irqs);
     return 0;
 }
 
@@ -284,7 +347,6 @@ uintptr_t proc::syscall(regstate* regs) {
     }
 
     case SYSCALL_GETPPID: {
-        log_printf("this is the ppid_: %d\n", this->ppid_);
         return this->ppid_;
     }
 
@@ -302,7 +364,6 @@ uintptr_t proc::syscall(regstate* regs) {
     }
 
     case SYSCALL_FORK: {
-        // Your code here
         return fork(this, regs);
     }
 
