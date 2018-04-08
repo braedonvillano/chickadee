@@ -15,22 +15,9 @@
 static spinlock page_lock;
 static uintptr_t next_free_pa;
 
+void print_struct();
 page pages[600];
-
 struct list<page, &page::link_> lists[10];
-
-void print_struct() {
-    for (int i = 0; i < 10; i++) {
-        log_printf("List %d:  ", i + 12);
-        page* next = lists[i].front();
-        while (next) {
-            log_printf("[p: %d o: %d f: %d]", next->pn, next->order, next->free);
-            log_printf(" -> ");
-            next = lists[i].next(next);
-        }
-        log_printf("null\n");
-    }
-}
 
 x86_64_page* kallocpage() {
     // auto irqs = page_lock.lock();
@@ -54,6 +41,9 @@ x86_64_page* kallocpage() {
 
     // page_lock.unlock(irqs);
     // return p;
+
+    // void* ptr = kalloc(PAGESIZE);
+    // kfree(ptr);
 
     return reinterpret_cast<x86_64_page*>(kalloc(PAGESIZE));
 }
@@ -101,6 +91,7 @@ void init_kalloc() {
 
     page_lock.unlock(irqs);
 
+
     // TESTING FOR THIS FUNCTION (CAN BE REMOVED)
 
     // for (int t = 0; t < 512; ++t){
@@ -144,7 +135,7 @@ void* kalloc(size_t sz) {
             break;
         }
     }
-    // return null if no memory
+    // return null if no memory to alloc
     if (!block) {
         page_lock.unlock(irqs);
         return nullptr; 
@@ -182,6 +173,7 @@ void kfree(void* ptr) {
     if (!ptr) return;
     auto irqs = page_lock.lock();
 
+    // uintptr_t addr = (uintptr_t) ptr;
     uintptr_t addr = ka2pa(ptr);
     int pgn = addr / PAGESIZE;
     assert(lsb(addr) >= 12);
@@ -224,3 +216,17 @@ void kfree(void* ptr) {
 void test_kalloc() {
     // do nothing for now
 }
+
+void print_struct() {
+    for (int i = 0; i < 10; i++) {
+        log_printf("List %d:  ", i + 12);
+        page* next = lists[i].front();
+        while (next) {
+            log_printf("[p: %d o: %d f: %d]", next->pn, next->order, next->free);
+            log_printf(" -> ");
+            next = lists[i].next(next);
+        }
+        log_printf("null\n");
+    }
+}
+

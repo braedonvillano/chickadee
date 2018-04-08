@@ -22,8 +22,8 @@ struct page;
 struct page {
     int pn;
     int order;
-    bool free; // true if free, false if allocated
-    bool block; // true if start of block, false if not
+    bool free;                         // true <-> free page
+    bool block;                        // true <-> start of block
     list_links link_;
 };
 
@@ -31,17 +31,21 @@ struct page {
 struct __attribute__((aligned(4096))) proc {
     // These three members must come first:
     pid_t pid_;                        // process ID
+    pid_t ppid_;                       // parent process ID
     regstate* regs_;                   // process's current registers
     yieldstate* yields_;               // process's current yield state
 
     enum state_t {
-        blank = 0, runnable, blocked, broken
+        blank = 0, runnable, blocked, broken, exited
     };
     state_t state_;                    // process state
     x86_64_pagetable* pagetable_;      // process's page table
 
     list_links runq_links_;
 
+    list_links child_link_;            // link for child pids
+
+    list<proc, &proc::child_link_> child_list;
 
     proc();
     NO_COPY_OR_ASSIGN(proc);
@@ -72,6 +76,7 @@ struct __attribute__((aligned(4096))) proc {
 #define NPROC 16
 extern proc* ptable[NPROC];
 extern spinlock ptable_lock;
+extern spinlock process_hierarchy_lock;
 #define KTASKSTACK_SIZE  4096
 
 // allocate a new `proc` and call its constructor

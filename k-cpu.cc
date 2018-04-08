@@ -102,6 +102,10 @@ void cpustate::schedule(proc* yielding_from) {
         // otherwise load the next process from the run queue
         runq_lock_.lock_noirq();
         if (current_) {
+            if (current_->state_ == proc::exited) {
+                kfree(current_->pagetable_);
+                kfree(current_);
+            }
             // re-enqueue `current_` at end of run queue if runnable
             if (current_->state_ == proc::runnable) {
                 enqueue(current_);

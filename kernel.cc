@@ -13,6 +13,8 @@ int kdisplay;                   // type of display
 static void kdisplay_ontick();
 static void process_setup(pid_t pid, const char* program_name);
 
+int exit(proc* proc);
+
 
 // kernel_start(command)
 //    Initialize the hardware and processes and start running. The `command`
@@ -52,6 +54,8 @@ void process_setup(pid_t pid, const char* name) {
     x86_64_pagetable* npt = kalloc_pagetable();
     assert(p && npt);
     p->init_user(pid, npt);
+    // idk if this is ok or not! probs isnt, but its working...
+    p->ppid_ = 1;
 
     int r = p->load(name);
     assert(r >= 0);
@@ -133,52 +137,57 @@ void proc::exception(regstate* regs) {
 
     }
 
-
     // Return to the current process.
     assert(this->state_ == proc::runnable);
 }
 
 int fork(proc* parent, regstate* regs) {
-    // so lets first go through the pid table and deliver a new pid
     auto irqs = ptable_lock.lock();
     proc* p = nullptr;
-    pid_t pid;
-
+    pid_t pid = 0;
+    // go through ptable to find open proc
     for (pid_t i = 1; i < NPROC; i++) {
-        // if there is an available process
         if (!ptable[i]) {
             pid = i;
             break;
         }
-        if (i == NPROC - 1) {
-            ptable_lock.unlock(irqs);
-            return -1;
-        }
     }
     p = ptable[pid] = reinterpret_cast<proc*>(kallocpage());
     x86_64_pagetable* npt = kalloc_pagetable();
-    // if there was no empty process
-    if (!p || !npt) {
+    // if there were no empty processes
+    if (!pid || !p || !npt) {
+        kfree(p); kfree(npt);
+        ptable[pid] = nullptr;
         ptable_lock.unlock(irqs);
         return -1;
     }
     p->init_user(pid, npt);
-
+    // loop through virtual memory and copy to child
     for (vmiter it(parent); it.low(); it.next()) {
-        if (it.user()) {
-            x86_64_page* pg = kallocpage();
-            if (!pg) {
+        if (!it.user() || !it.present()) continue;
+        if (it.pa() == ktext2pa(console)) {
+            if (vmiter(p, it.va()).map(ktext2pa(console)) < 0) {
                 ptable_lock.unlock(irqs);
+                kfree(p); kfree(npt); exit(p);
                 return -1;
             }
-            memcpy(pg, (void*) it.va(), PAGESIZE);
-            if (vmiter(p, it.va()).map(ka2pa(pg), PTE_P | PTE_W | PTE_U) < 0) {
-                ptable_lock.unlock(irqs);
-                return -1;
-            }
+            continue;
+        }
+        x86_64_page* pg = kallocpage();
+        if (!pg) {
+            ptable_lock.unlock(irqs);
+            kfree(p); kfree(npt); kfree(pg); exit(p);
+            return -1;
+        }
+        memcpy(pg, (void*) it.ka(), PAGESIZE);
+        if (vmiter(p, it.va()).map(ka2pa(pg), it.perm()) < 0) {
+            ptable_lock.unlock(irqs);
+            kfree(p); kfree(npt); kfree(pg); exit(p);
+            return -1;
         }
     }
     memcpy(p->regs_, regs, sizeof(regstate));
+    p->ppid_ = parent->pid_;
     int cpu = pid % ncpu;
     cpus[cpu].runq_lock_.lock_noirq();
     cpus[cpu].enqueue(p);
@@ -193,12 +202,18 @@ int exit(proc* proc) {
     auto irqs = ptable_lock.lock();
 
     pid_t pid = proc->pid_;
+    proc->state_ = proc::exited;
     ptable[pid] = nullptr;
-
-    // itereate over virtual memory and free?
-
-    // i know that i need to iterate over physical...
-
+    // free the process's memory 
+    for (vmiter it(proc); it.low(); it.next()) {
+        if (it.user() && it.present() && it.pa() != ktext2pa(console)) { 
+            kfree((void*) it.ka());
+        }
+    }
+    // free the process's page tabeles
+    for (ptiter it(proc); it.low(); it.next()) {
+        kfree((void*) pa2ka(it.ptp_pa()));
+    }
     ptable_lock.unlock(irqs);
     return 0;
 }
@@ -254,9 +269,23 @@ uintptr_t proc::syscall(regstate* regs) {
     }
 
     case SYSCALL_EXIT: {
-        // exit(this);
-        log_printf("im a lil bich\n");
+        exit(this);
         return 0;
+    }
+
+    case SYSCALL_MSLEEP: {
+        // perhaps i should be handles the proc state_?
+        unsigned long want_ticks = ticks + (regs->reg_rdi + 9) / 10;
+        sti();
+        while (long(want_ticks - ticks) > 0) {
+            this->yield();
+        }
+        return 0;
+    }
+
+    case SYSCALL_GETPPID: {
+        log_printf("this is the ppid_: %d\n", this->ppid_);
+        return this->ppid_;
     }
 
     // this is to map a the console to a process (BV)

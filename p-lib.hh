@@ -110,13 +110,13 @@ static inline int sys_kdisplay(int display_type) {
 // sys_msleep(msec)
 //    Block for approximately `msec` milliseconds.
 static inline int sys_msleep(unsigned msec) {
-    return E_NOSYS;
+    return syscall0(SYSCALL_MSLEEP, msec);
 }
 
 // sys_getppid()
 //    Return parent process ID.
 static inline pid_t sys_getppid() {
-    return E_NOSYS;
+    return syscall0(SYSCALL_GETPPID);
 }
 
 // sys_waitpid(pid, status, options)
