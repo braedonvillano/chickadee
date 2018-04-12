@@ -34,6 +34,9 @@ struct __attribute__((aligned(4096))) proc {
     pid_t ppid_;                       // parent process ID
     regstate* regs_;                   // process's current registers
     yieldstate* yields_;               // process's current yield state
+#if HAVE_SANITIZERS
+    int sanitizer_status_ = 0;
+#endif
 
     enum state_t {
         blank = 0, runnable, blocked, broken, exited
@@ -55,6 +58,14 @@ struct __attribute__((aligned(4096))) proc {
 
     void init_user(pid_t pid, x86_64_pagetable* pt);
     void init_kernel(pid_t pid, void (*f)(proc*));
+
+    struct loader {
+        x86_64_pagetable* pagetable_ = nullptr;
+        uintptr_t entry_rip_ = 0;
+        virtual ssize_t get_page(uint8_t** pg, size_t off) = 0;
+        virtual void put_page(uint8_t* pg) = 0;
+    };
+    static int load(loader& ld);
     int load(const char* binary_name);
 
     void exception(regstate* reg);
@@ -70,7 +81,7 @@ struct __attribute__((aligned(4096))) proc {
     inline void unlock_pagetable_read(irqstate& irqs);
 
  private:
-    int load_segment(const elf_program* ph, const uint8_t* data);
+    static int load_segment(const elf_program& ph, loader& ld);
 };
 
 #define NPROC 16
@@ -80,7 +91,7 @@ extern spinlock process_hierarchy_lock;
 #define KTASKSTACK_SIZE  4096
 
 // allocate a new `proc` and call its constructor
-proc* kalloc_proc();
+proc* kalloc_proc() __attribute__((malloc));
 
 
 // CPU state type
@@ -104,7 +115,10 @@ struct __attribute__((aligned(4096))) cpustate {
     x86_64_taskstate task_descriptor_;
 
 
-    cpustate() = default;
+
+    inline cpustate()
+        : self_(this), current_(nullptr) {
+    }
     NO_COPY_OR_ASSIGN(cpustate);
 
     inline bool contains(uintptr_t addr) const;
@@ -176,7 +190,7 @@ extern memrangeset<16> physical_ranges;
 
 
 // Hardware interrupt numbers
-#define INT_IRQ                 32
+#define INT_IRQ                 32U
 #define IRQ_TIMER               0
 #define IRQ_KEYBOARD            1
 #define IRQ_IDE                 14
@@ -227,6 +241,16 @@ inline uint64_t ka2pa(T* ptr) {
     return ka2pa(reinterpret_cast<uint64_t>(ptr));
 }
 
+inline uint64_t kptr2pa(uint64_t kptr) {
+    assert(kptr >= HIGHMEM_BASE);
+    return kptr - (kptr >= KTEXT_BASE ? KTEXT_BASE : HIGHMEM_BASE);
+}
+
+template <typename T>
+inline uint64_t kptr2pa(T* ptr) {
+    return kptr2pa(reinterpret_cast<uint64_t>(ptr));
+}
+
 template <typename T>
 inline bool is_kptr(T* ptr) {
     uintptr_t va = reinterpret_cast<uint64_t>(ptr);
@@ -246,17 +270,14 @@ template <>
 inline uint16_t read_unaligned<uint16_t>(const uint8_t* ptr) {
     return ptr[0] | (ptr[1] << 8);
 }
-
 template <>
 inline int16_t read_unaligned<int16_t>(const uint8_t* ptr) {
     return ptr[0] | (ptr[1] << 8);
 }
-
 template <>
 inline uint32_t read_unaligned<uint32_t>(const uint8_t* ptr) {
     return ptr[0] | (ptr[1] << 8) | (ptr[2] << 16) | (ptr[3] << 24);
 }
-
 template <>
 inline int32_t read_unaligned<int32_t>(const uint8_t* ptr) {
     return ptr[0] | (ptr[1] << 8) | (ptr[2] << 16) | (ptr[3] << 24);
@@ -271,12 +292,12 @@ inline T read_unaligned_pa(uint64_t pa) {
 // kallocpage
 //    Allocate and return a page. Returns `nullptr` on failure.
 //    Returns a high canonical address.
-x86_64_page* kallocpage();
+x86_64_page* kallocpage() __attribute__((malloc));
 
 // kalloc(sz)
 //    Allocate and return a pointer to at least `sz` contiguous bytes
 //    of memory. Returns `nullptr` if `sz == 0` or on failure.
-void* kalloc(size_t sz);
+void* kalloc(size_t sz) __attribute__((malloc));
 
 // kfree(ptr)
 //    Free a pointer previously returned by `kalloc`, `kallocpage`, or
@@ -290,6 +311,14 @@ template <typename T>
 inline T* knew() {
     if (void* mem = kalloc(sizeof(T))) {
         return new (mem) T;
+    } else {
+        return nullptr;
+    }
+}
+template <typename T, typename... Args>
+inline T* knew(Args&&... args) {
+    if (void* mem = kalloc(sizeof(T))) {
+        return new (mem) T(std::forward<Args>(args)...);
     } else {
         return nullptr;
     }
@@ -339,6 +368,13 @@ void test_kalloc();
 // initialize hardware and CPUs
 void init_hardware();
 
+// query machine configuration
+unsigned machine_ncpu();
+unsigned machine_pci_irq(int pci_addr, int intr_pin);
+
+struct ahcistate;
+extern ahcistate* sata_disk;
+
 
 // kernel page table (used for virtual memory)
 extern x86_64_pagetable early_pagetable[2];
@@ -367,14 +403,6 @@ void kernel_start(const char* command);
 void console_show_cursor(int cpos);
 
 
-// program_load(p, programnumber)
-//    Load the code corresponding to program `programnumber` into the process
-//    `p` and set `p->p_reg.reg_eip` to its entry point. Calls
-//    `assign_physical_page` as required. Returns 0 on success and
-//    -1 on failure (e.g. out-of-memory). `allocator` is passed to
-//    `vm_map`.
-int program_load(proc* p, int programnumber);
-
 // log_printf, log_vprintf
 //    Print debugging messages to the host's `log.txt` file. We run QEMU
 //    so that messages written to the QEMU "parallel port" end up in `log.txt`.
@@ -387,15 +415,18 @@ void log_vprintf(const char* format, va_list val) __attribute__((noinline));
 void log_backtrace(const char* prefix = "");
 
 
-// error_printf, error_vprintf
-//    Print debugging messages to the console and to the host's
-//    `log.txt` file via `log_printf`.
-int error_printf(int cpos, int color, const char* format, ...)
-    __attribute__((noinline));
-void error_printf(int color, const char* format, ...) __attribute__((noinline));
-void error_printf(const char* format, ...) __attribute__((noinline));
-int error_vprintf(int cpos, int color, const char* format, va_list val)
-    __attribute__((noinline));
+#if HAVE_SANITIZERS
+// sanitizer functions
+void init_sanitizers();
+void disable_asan();
+void enable_asan();
+void asan_mark_memory(unsigned long pa, size_t sz, bool poisoned);
+#else
+inline void disable_asan() {}
+inline void enable_asan() {}
+inline void asan_mark_memory(unsigned long, size_t, bool) {}
+#endif
+
 
 // `panicking == true` iff some CPU has panicked
 extern bool panicking;

@@ -1,11 +1,16 @@
 #include "kernel.hh"
 #include "k-apic.hh"
 #include "k-devices.hh"
+#include "k-pci.hh"
 #include "k-vmiter.hh"
+#include "elf.h"
+
 
 // k-hardware.cc
 //
 //    Functions for interacting with x86 hardware.
+
+pcistate pcistate::state;
 
 
 // kalloc_pagetable
@@ -43,64 +48,52 @@ void set_pagetable(x86_64_pagetable* pagetable) {
 }
 
 
-// pci_make_configaddr(bus, slot, func)
-//    Construct a PCI configuration space address from parts.
-
-static int pci_make_configaddr(int bus, int slot, int func) {
-    return (bus << 16) | (slot << 11) | (func << 8);
-}
-
-
-// pci_config_readl(bus, slot, func, offset)
-//    Read a 32-bit word in PCI configuration space.
-
-#define PCI_HOST_BRIDGE_CONFIG_ADDR 0xCF8
-#define PCI_HOST_BRIDGE_CONFIG_DATA 0xCFC
-
-static uint32_t pci_config_readl(int configaddr, int offset) {
-    outl(PCI_HOST_BRIDGE_CONFIG_ADDR, 0x80000000 | configaddr | offset);
-    return inl(PCI_HOST_BRIDGE_CONFIG_DATA);
-}
-
-
-// pci_find_device
-//    Search for a PCI device matching `vendor` and `device`. Return
-//    the config base address or -1 if no device was found.
-
-static int pci_find_device(int vendor, int device) {
-    for (int bus = 0; bus != 256; ++bus) {
-        for (int slot = 0; slot != 32; ++slot) {
-            for (int func = 0; func != 8; ++func) {
-                int configaddr = pci_make_configaddr(bus, slot, func);
-                uint32_t vendor_device = pci_config_readl(configaddr, 0);
-                if (vendor_device == (uint32_t) (vendor | (device << 16))) {
-                    return configaddr;
-                } else if (vendor_device == (uint32_t) -1 && func == 0) {
-                    break;
-                }
-            }
+// pcistate::next(addr)
+//    Return the next valid PCI function after `addr`, or -1 if there
+//    is none.
+int pcistate::next(int addr) const {
+    uint32_t x = readl(addr + config_lthb);
+    while (1) {
+        if (addr_func(addr) == 0
+            && (x == uint32_t(-1) || !(x & 0x800000))) {
+            addr += make_addr(0, 1, 0);
+        } else {
+            addr += make_addr(0, 0, 1);
+        }
+        if (addr >= addr_end) {
+            return -1;
+        }
+        x = readl(addr + config_lthb);
+        if (x != uint32_t(-1)) {
+            return addr;
         }
     }
-    return -1;
+}
+
+void pcistate::enable(int addr) {
+    // enable I/O (0x01), memory (0x02), and bus master (0x04)
+    writew(addr + config_command, 0x0007);
 }
 
 
 // poweroff
 //    Turn off the virtual machine. This requires finding a PCI device
-//    that speaks ACPI; QEMU emulates a PIIX4 Power Management Controller.
-
-#define PCI_VENDOR_ID_INTEL     0x8086
-#define PCI_DEVICE_ID_PIIX4     0x7113
+//    that speaks ACPI.
 
 void poweroff() {
-    int configaddr = pci_find_device(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_PIIX4);
-    if (configaddr >= 0) {
+    auto& pci = pcistate::get();
+    int addr = pci.find([&] (int a) {
+            uint32_t vd = pci.readl(a + pci.config_vendor);
+            return vd == 0x71138086U /* PIIX4 Power Management Controller */
+                || vd == 0x29188086U /* ICH9 LPC Interface Controller */;
+        });
+    if (addr >= 0) {
         // Read I/O base register from controller's PCI configuration space.
-        int pm_io_base = pci_config_readl(configaddr, 0x40) & 0xFFC0;
+        int pm_io_base = pci.readl(addr + 0x40) & 0xFFC0;
         // Write `suspend enable` to the power management control register.
         outw(pm_io_base + 4, 0x2000);
     }
-    // No PIIX4; spin.
+    // No known ACPI controller; spin.
     console_printf(CPOS(24, 0), 0xC000, "Cannot power off!\n");
     while (1) {
     }
@@ -171,6 +164,40 @@ void log_printf(const char* format, ...) {
 }
 
 
+// lookup_symbol(addr, name, start)
+//    Use the debugging symbol table to look up `addr`. Return the
+//    corresponding symbol name (usually a function name) in `*name`
+//    and the first address in that function in `*start`.
+
+__no_asan
+bool lookup_symbol(uintptr_t addr, const char** name, uintptr_t* start) {
+    extern elf_symtabref symtab;
+    size_t l = 0;
+    size_t r = symtab.nsym;
+    while (l < r) {
+        size_t m = l + ((r - l) >> 1);
+        auto& sym = symtab.sym[m];
+        if (sym.st_value <= addr
+            && (sym.st_size != 0
+                ? addr < sym.st_value + sym.st_size
+                : m + 1 == symtab.nsym || addr < (&sym)[1].st_value)) {
+            if (name) {
+                *name = symtab.strtab + symtab.sym[m].st_name;
+            }
+            if (start) {
+                *start = symtab.sym[m].st_value;
+            }
+            return true;
+        } else if (symtab.sym[m].st_value < addr) {
+            l = m + 1;
+        } else {
+            r = m;
+        }
+    }
+    return false;
+}
+
+
 // log_backtrace(prefix)
 //    Print a backtrace to `log.txt`, each line prefixed by `prefix`.
 
@@ -185,14 +212,19 @@ void log_backtrace(const char* prefix) {
         if (!ret_rip) {
             break;
         }
-        log_printf("%s  #%d  %p\n", prefix, frame, ret_rip);
+        const char* name;
+        if (lookup_symbol(ret_rip, &name, nullptr)) {
+            log_printf("%s  #%d  %p  <%s>\n", prefix, frame, ret_rip, name);
+        } else {
+            log_printf("%s  #%d  %p\n", prefix, frame, ret_rip);
+        }
         rbp = next_rbp;
         ++frame;
     }
 }
 
 
-// error_printf, error_vprintf
+// error_vprintf
 //    Print debugging messages to the console and to the host's
 //    `log.txt` file via `log_printf`.
 
@@ -202,28 +234,6 @@ int error_vprintf(int cpos, int color, const char* format, va_list val) {
     log_vprintf(format, val2);
     va_end(val2);
     return console_vprintf(cpos, color, format, val);
-}
-
-int error_printf(int cpos, int color, const char* format, ...) {
-    va_list val;
-    va_start(val, format);
-    cpos = error_vprintf(cpos, color, format, val);
-    va_end(val);
-    return cpos;
-}
-
-void error_printf(int color, const char* format, ...) {
-    va_list val;
-    va_start(val, format);
-    error_vprintf(-1, color, format, val);
-    va_end(val);
-}
-
-void error_printf(const char* format, ...) {
-    va_list val;
-    va_start(val, format);
-    error_vprintf(-1, COLOR_ERROR, format, val);
-    va_end(val);
 }
 
 
@@ -267,8 +277,8 @@ void panic(const char* format, ...) {
 }
 
 void assert_fail(const char* file, int line, const char* msg) {
-    cursorpos = 23 * CONSOLE_COLUMNS;
-    error_printf("%s:%d: assertion '%s' failed\n", file, line, msg);
+    cursorpos = CPOS(23, 0);
+    error_printf("%s:%d: kernel assertion '%s' failed\n", file, line, msg);
 
     uintptr_t rsp = read_rsp(), rbp = read_rbp();
     uintptr_t stack_top = ROUNDUP(rsp, PAGESIZE);
@@ -280,7 +290,12 @@ void assert_fail(const char* file, int line, const char* msg) {
         if (!ret_rip) {
             break;
         }
-        error_printf("  #%d  %p\n", frame, ret_rip);
+        const char* name;
+        if (lookup_symbol(ret_rip, &name, nullptr)) {
+            error_printf("  #%d  %p  <%s>\n", frame, ret_rip, name);
+        } else {
+            error_printf("  #%d  %p\n", frame, ret_rip);
+        }
         rbp = next_rbp;
         ++frame;
     }
@@ -301,7 +316,8 @@ extern "C" {
 //    Return 0 if the static variables guarded by `*guard` are already
 //    initialized. Otherwise lock `*guard` and return 1. The compiler
 //    will initialize the statics, then call `__cxa_guard_release`.
-int __cxa_guard_acquire(std::atomic<char>* guard) {
+int __cxa_guard_acquire(long long* arg) {
+    std::atomic<char>* guard = reinterpret_cast<std::atomic<char>*>(arg);
     if (guard->load(std::memory_order_relaxed) == 2) {
         return 0;
     }
@@ -321,7 +337,8 @@ int __cxa_guard_acquire(std::atomic<char>* guard) {
 // __cxa_guard_release(guard)
 //    Mark `guard` to indicate that the static variables it guards are
 //    initialized.
-void __cxa_guard_release(std::atomic<char>* guard) {
+void __cxa_guard_release(long long* arg) {
+    std::atomic<char>* guard = reinterpret_cast<std::atomic<char>*>(arg);
     guard->store(2);
 }
 

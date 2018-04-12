@@ -25,8 +25,7 @@ void cpustate::init() {
         assert(reinterpret_cast<uintptr_t>(&syscall_scratch_) == addr + 16);
     }
 
-    self_ = this;
-    current_ = nullptr;
+    assert(self_ == this && !current_);
     index_ = this - cpus;
     runq_lock_.clear();
     idle_task_ = nullptr;
@@ -57,13 +56,14 @@ void cpustate::disable_irq(int irqno) {
 
 
 // cpustate::enqueue(p)
-//    Enqueue `p` on this CPU's run queue. Does nothing if `p` is
-//    already on some run queue. `p` must be resumable (or not
-//    runnable), and `this->runq_lock_` must be held.
+//    Enqueue `p` on this CPU's run queue. `this->runq_lock_` must
+//    be locked. Does nothing if `p` is on a run queue or is currently
+//    running on this CPU. Otherwise `p` must be resumable (or not
+//    runnable).
 
 void cpustate::enqueue(proc* p) {
-    assert(p->resumable() || p->state_ != proc::runnable);
-    if (!p->runq_links_.is_linked()) {
+    if (current_ != p && !p->runq_links_.is_linked()) {
+        assert(p->resumable() || p->state_ != proc::runnable);
         runq_.push_back(p);
     }
 }
@@ -101,16 +101,17 @@ void cpustate::schedule(proc* yielding_from) {
 
         // otherwise load the next process from the run queue
         runq_lock_.lock_noirq();
-        if (current_) {
+        if (proc* p = current_) {
             if (current_->state_ == proc::exited) {
                 kfree(current_->pagetable_);
                 kfree(current_);
-            }
-            // re-enqueue `current_` at end of run queue if runnable
-            if (current_->state_ == proc::runnable) {
-                enqueue(current_);
+                p = 0;
             }
             current_ = yielding_from = nullptr;
+            // re-enqueue `p` at end of run queue if runnable
+            if (p->state_ == proc::runnable) {
+                enqueue(p);
+            }
             // switch to a safe page table
             lcr3(ktext2pa(early_pagetable));
         }
@@ -142,6 +143,6 @@ void idle(proc*) {
 
 void cpustate::init_idle_task() {
     assert(!idle_task_);
-    idle_task_ = reinterpret_cast<proc*>(kallocpage());
+    idle_task_ = kalloc_proc();
     idle_task_->init_kernel(-1, idle);
 }

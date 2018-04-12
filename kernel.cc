@@ -1,5 +1,6 @@
 #include "kernel.hh"
 #include "k-apic.hh"
+#include "k-chkfs.hh"
 #include "k-devices.hh"
 #include "k-vmiter.hh"
 #define INIT_PID 1
@@ -164,13 +165,18 @@ void proc::exception(regstate* regs) {
         break;
 
     default:
-        panic("Unexpected exception %d!\n", regs->reg_intno);
+        if (sata_disk && regs->reg_intno == INT_IRQ + sata_disk->irq_) {
+            sata_disk->handle_interrupt();
+        } else {
+            panic("Unexpected exception %d!\n", regs->reg_intno);
+        }
         break;                  /* will not be reached */
 
     }
 
     // Return to the current process.
-    assert(this->state_ == proc::runnable);
+    // If exception arrived in user mode, the process must be runnable.
+    assert((regs->reg_cs & 3) == 0 || this->state_ == proc::runnable);
 }
 
 int fork(proc* parent, regstate* regs) {
@@ -426,6 +432,22 @@ uintptr_t proc::syscall(regstate* regs) {
         csl.lock_.unlock(irqs);
         return n;
     }
+
+    case SYSCALL_READDISKFILE: {
+        const char* filename = reinterpret_cast<const char*>(regs->reg_rdi);
+        unsigned char* buf = reinterpret_cast<unsigned char*>(regs->reg_rsi);
+        uintptr_t sz = regs->reg_rdx;
+        uintptr_t off = regs->reg_r10;
+
+        if (!sata_disk) {
+            return E_IO;
+        }
+
+        return chickadeefs_read_file_data(filename, buf, sz, off);
+    }
+
+    case SYSCALL_SYNC:
+        return bufcache::get().sync(regs->reg_rdi != 0);
 
     default:
         // no such system call

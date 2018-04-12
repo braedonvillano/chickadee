@@ -23,8 +23,11 @@ STRIP   = $(CCPREFIX)strip
 
 # Native commands
 HOSTCC  = cc
+HOSTCXX = c++
 TAR     = tar
 PERL    = perl
+HOSTCFLAGS := $(CFLAGS) -std=gnu11 -Wall -W
+HOSTCXXFLAGS := $(CXXFLAGS) -std=gnu++1z -Wall -W
 
 # Compiler flags
 # -Os is required for the boot loader to fit within 512 bytes;
@@ -40,8 +43,17 @@ CCOMMONFLAGS += $(shell $(CC) -fno-stack-protector -E -x c /dev/null >/dev/null 
 ASFLAGS := $(CCOMMONFLAGS)
 CFLAGS := $(CFLAGS) $(CCOMMONFLAGS) -std=gnu11 -gdwarf
 CXXFLAGS := $(CXXFLAGS) $(CCOMMONFLAGS) -std=gnu++1z \
-	-fno-exceptions -fno-rtti -gdwarf
+	-fno-exceptions -fno-rtti -gdwarf -ffunction-sections
 DEPCFLAGS = -MD -MF $(DEPSDIR)/$*.d -MP
+DEPCFLAGS_AT = -MD -MF $(DEPSDIR)/$(@F).d -MP
+
+KERNELCXXFLAGS = $(CXXFLAGS) $(SANITIZEFLAGS)
+ifeq ($(filter 1,$(SAN) $(UBSAN)),1)
+KERNEL_OBJS += $(OBJDIR)/k-sanitizers.ko
+KERNELCXXFLAGS += -DHAVE_SANITIZERS
+SANITIZEFLAGS := -fsanitize=undefined -fsanitize=kernel-address
+$(OBJDIR)/k-alloc.ko $(OBJDIR)/k-sanitizers.ko: SANITIZEFLAGS :=
+endif
 
 # Linker flags
 LDFLAGS := $(LDFLAGS) -Os --gc-sections -z max-page-size=0x1000 -static -nostdlib -nostartfiles
@@ -51,6 +63,7 @@ LDFLAGS	+= $(shell $(LD) -m elf_x86_64 --help >/dev/null 2>&1 && echo -m elf_x86
 # Dependencies
 DEPSDIR := .deps
 BUILDSTAMP := $(DEPSDIR)/rebuildstamp
+KERNELBUILDSTAMP := $(DEPSDIR)/krebuildstamp
 DEPFILES := $(wildcard $(DEPSDIR)/*.d)
 ifneq ($(DEPFILES),)
 include $(DEPFILES)
@@ -59,15 +72,27 @@ endif
 ifneq ($(DEP_CC),$(CC) $(CPPFLAGS) $(CFLAGS) $(DEPCFLAGS) $(O) _ $(LDFLAGS))
 DEP_CC := $(shell mkdir -p $(DEPSDIR); echo >$(BUILDSTAMP); echo "DEP_CC:=$(CC) $(CPPFLAGS) $(CFLAGS) $(DEPCFLAGS) $(O) _ $(LDFLAGS)" >$(DEPSDIR)/_cc.d; echo "DEP_PREFER_GCC:=$(PREFER_GCC)" >>$(DEPSDIR)/_cc.d)
 endif
-ifneq ($(DEP_CXX),$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(DEPCFLAGS) $(O))
-DEP_CXX := $(shell mkdir -p $(DEPSDIR); echo >$(BUILDSTAMP); echo "DEP_CXX:=$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(DEPCFLAGS) $(O)" >$(DEPSDIR)/_cxx.d)
+ifneq ($(DEP_CXX),$(CXX) $(CPPFLAGS) $(DEPCFLAGS) $(CXXFLAGS) $(O) _ $(HOSTCXXFLAGS))
+DEP_CXX := $(shell mkdir -p $(DEPSDIR); echo >$(BUILDSTAMP); echo "DEP_CXX:=$(CXX) $(CPPFLAGS) $(DEPCFLAGS) $(CXXFLAGS) $(O) _ $(HOSTCXXFLAGS)" >$(DEPSDIR)/_cxx.d)
+endif
+ifneq ($(DEP_KERNELCXX),$(CXX) $(CPPFLAGS) $(DEPCFLAGS) $(KERNELCXXFLAGS) $(O))
+DEP_KERNELCXX := $(shell mkdir -p $(DEPSDIR); echo >$(KERNELBUILDSTAMP); echo "DEP_KERNELCXX:=$(CXX) $(CPPFLAGS) $(DEPCFLAGS) $(KERNELCXXFLAGS) $(O)" >$(DEPSDIR)/_kernelcxx.d)
 endif
 
 BUILDSTAMPS = $(OBJDIR)/stamp $(BUILDSTAMP)
+KERNELBUILDSTAMPS = $(OBJDIR)/stamp $(KERNELBUILDSTAMP)
 
 $(OBJDIR)/stamp $(BUILDSTAMP):
 	$(call run,mkdir -p $(@D))
 	$(call run,touch $@)
+
+ifneq ($(strip $(INITFS_CONTENTS)),$(DEP_INITFS_CONTENTS))
+INITFS_BUILDSTAMP := $(shell echo "DEP_INITFS_CONTENTS:=$(INITFS_CONTENTS)" > $(DEPSDIR)/_initfs.d; echo always)
+endif
+
+ifneq ($(strip $(DISKFS_CONTENTS)),$(DEP_DISKFS_CONTENTS))
+DISKFS_BUILDSTAMP := $(shell echo "DEP_DISKFS_CONTENTS:=$(DISKFS_CONTENTS)" > $(DEPSDIR)/_diskfs.d; echo always)
+endif
 
 
 # Qemu emulator
@@ -86,8 +111,6 @@ $(QEMU_PRELOAD_LIBRARY): build/qemu-nograb.c
 	-$(call run,$(HOSTCC) -fPIC -shared -Wl$(comma)-soname$(comma)$(@F) -ldl -o $@ $<)
 
 QEMU_PRELOAD = $(shell if test -r $(QEMU_PRELOAD_LIBRARY); then echo LD_PRELOAD=$(QEMU_PRELOAD_LIBRARY); fi)
-
-QEMUIMG = -drive file=$<,if=ide,format=raw
 
 
 # Run the emulator
@@ -124,11 +147,11 @@ always:
 	@:
 
 # These targets don't correspond to files
-.PHONY: all always clean realclean distclean \
-	run run-qemu run-graphic run-console run-gdb \
-	run-gdb-graphic run-gdb-console run-graphic-gdb run-console-gdb \
+.PHONY: all always clean realclean distclean cleanfs \
+	run run-graphic run-console run-monitor \
+	run-gdb run-gdb-graphic run-gdb-console \
 	check-qemu kill \
-	run-% run-qemu-% run-graphic-% run-console-% \
+	run-% run-graphic-% run-console-% run-monitor-% \
 	run-gdb-% run-gdb-graphic-% run-gdb-console-%
 
 # Eliminate default suffix rules

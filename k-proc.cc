@@ -1,6 +1,7 @@
-#include "elf.h"
 #include "kernel.hh"
+#include "elf.h"
 #include "k-vmiter.hh"
+#include "k-devices.hh"
 
 proc* ptable[NPROC];            // array of process descriptor pointers
 spinlock ptable_lock;           // protects `ptable`
@@ -96,16 +97,40 @@ void proc::init_kernel(pid_t pid, void (*f)(proc*)) {
 }
 
 
-#define SECTORSIZE 512
+// PROCESS LOADING FUNCTIONS
 
-struct flatfs_file {
-    const char* name;
-    const unsigned char* first;
-    const unsigned char* last;
+namespace {
+struct memfile_loader : public proc::loader {
+    memfile* mf_;
+    ssize_t get_page(uint8_t** pg, size_t off) override;
+    void put_page(uint8_t* pg) override;
 };
 
-// define the `flatfs_files` array
-#include "obj/k-flatfs.c"
+// loader::get_page(pg, off)
+//    Load a page at offset `off`, which is page-aligned. Set `*pg`
+//    to the address of the loaded page and return the number of
+//    valid bytes in that page, or negative on error.
+
+ssize_t memfile_loader::get_page(uint8_t** pg, size_t off) {
+    if (!mf_) {
+        *pg = nullptr;
+        return E_NOENT;
+    } else if (off >= mf_->len_) {
+        *pg = nullptr;
+        return 0;
+    } else {
+        *pg = mf_->data_ + off;
+        return mf_->len_ - off;
+    }
+}
+
+// loader::put_page(pg)
+//    Called to indicate that `proc::load` is done with `pg`,
+//    which is a page returned by a previous call to `get_page`.
+
+void memfile_loader::put_page(uint8_t* pg) {
+}
+}
 
 
 // proc::load(binary_name)
@@ -114,74 +139,128 @@ struct flatfs_file {
 //    Returns 0 on success and negative on failure (e.g. out-of-memory).
 
 int proc::load(const char* binary_name) {
-    // find `flatfs_file` for `binary_name`
-    const flatfs_file* fs = flatfs_files;
-    size_t nfiles = sizeof(flatfs_files) / sizeof(flatfs_files[0]);
-    const flatfs_file* end_fs = fs + nfiles;
-    while (fs < end_fs && strcmp(binary_name, fs->name) != 0) {
-        ++fs;
+    memfile_loader ml;
+    ml.pagetable_ = pagetable_;
+    ml.mf_ = memfile::initfs_lookup(binary_name);
+    int r = load(ml);
+    if (r >= 0) {
+        regs_->reg_rip = ml.entry_rip_;
     }
-    if (fs == end_fs) {
-        return -1;
-    }
+    return r;
+}
+
+
+// proc::load(loader)
+//    Generic version of `proc::load(binary_name)`.
+
+int proc::load(loader& ld) {
+    union {
+        elf_header eh;
+        elf_program ph;
+    } u;
+    size_t len;
+    unsigned nph, phoff;
 
     // validate the binary
-    assert(size_t(fs->last - fs->first) >= sizeof(elf_header));
-    const elf_header* eh = reinterpret_cast<const elf_header*>(fs->first);
-    assert(eh->e_magic == ELF_MAGIC);
-    assert(eh->e_phentsize == sizeof(elf_program));
-    assert(eh->e_shentsize == sizeof(elf_section));
+    uint8_t* headerpg;
+    ssize_t r = ld.get_page(&headerpg, 0);
+    if (r < 0) {
+        goto exit;
+    } else if (size_t(r) < sizeof(elf_header)) {
+        r = E_NOEXEC;
+        goto exit;
+    }
+
+    len = r;
+    memcpy(&u.eh, headerpg, sizeof(elf_header));
+    if (u.eh.e_magic != ELF_MAGIC
+        || u.eh.e_type != ELF_ET_EXEC
+        || u.eh.e_phentsize != sizeof(elf_program)
+        || u.eh.e_shentsize != sizeof(elf_section)
+        || u.eh.e_phoff > PAGESIZE
+        || u.eh.e_phoff > len
+        || u.eh.e_phnum == 0
+        || u.eh.e_phnum > (PAGESIZE - u.eh.e_phoff) / sizeof(elf_program)
+        || u.eh.e_phnum > (len - u.eh.e_phoff) / sizeof(elf_program)) {
+        r = E_NOEXEC;
+        goto exit;
+    }
+    nph = u.eh.e_phnum;
+    phoff = u.eh.e_phoff;
+    ld.entry_rip_ = u.eh.e_entry;
 
     // load each loadable program segment into memory
-    const elf_program* ph = reinterpret_cast<const elf_program*>
-        (fs->first + eh->e_phoff);
-    for (int i = 0; i < eh->e_phnum; ++i) {
-        if (ph[i].p_type == ELF_PTYPE_LOAD) {
-            int r = load_segment(&ph[i], fs->first + ph[i].p_offset);
-            if (r < 0) {
-                return r;
-            }
+    for (unsigned i = 0; i != nph; ++i) {
+        memcpy(&u.ph, headerpg + phoff + i * sizeof(u.ph), sizeof(u.ph));
+        if (u.ph.p_type == ELF_PTYPE_LOAD
+            && (r = load_segment(u.ph, ld)) < 0) {
+            goto exit;
         }
     }
 
     // set the entry point from the ELF header
-    regs_->reg_rip = eh->e_entry;
-    return 0;
+    r = 0;
+
+ exit:
+    ld.put_page(headerpg);
+    return r;
 }
 
 
-// proc::load_segment(ph, src)
+// proc::load_segment(ph, ld)
 //    Load an ELF segment at virtual address `ph->p_va` into this process.
-//    Copies `[src, src + ph->p_filesz)` to `dst`, then clears
+//    Loads pages `[src, src + ph->p_filesz)` to `dst`, then clears
 //    `[ph->p_va + ph->p_filesz, ph->p_va + ph->p_memsz)` to 0.
 //    Calls `kallocpage` to allocate pages and uses `vmiter::map`
-//    to map them in `pagetable_`. Returns 0 on success and -1 on failure.
+//    to map them in `pagetable_`. Returns 0 on success and an error
+//    code on failure.
 
-int proc::load_segment(const elf_program* ph, const uint8_t* data) {
-    uintptr_t va = (uintptr_t) ph->p_va;
-    uintptr_t end_file = va + ph->p_filesz;
-    uintptr_t end_mem = va + ph->p_memsz;
+int proc::load_segment(const elf_program& ph, loader& ld) {
+    uintptr_t va = (uintptr_t) ph.p_va;
+    uintptr_t end_file = va + ph.p_filesz;
+    uintptr_t end_mem = va + ph.p_memsz;
+    if (va > VA_LOWEND
+        || VA_LOWEND - va < ph.p_memsz
+        || ph.p_memsz < ph.p_filesz) {
+        return E_NOEXEC;
+    }
 
     // allocate memory
-    for (vmiter it(this, va & ~(PAGESIZE - 1));
+    for (vmiter it(ld.pagetable_, ROUNDDOWN(va, PAGESIZE));
          it.va() < end_mem;
          it += PAGESIZE) {
         x86_64_page* pg = kallocpage();
         if (!pg || it.map(ka2pa(pg)) < 0) {
-            return -1;
+            return E_NOMEM;
         }
-        assert(it.pa() == ka2pa(pg));
     }
 
-    // ensure new memory mappings are active
-    set_pagetable(pagetable_);
+    // load binary data into allocated memory
+    size_t off = ph.p_offset;
+    size_t sz;
+    for (vmiter it(ld.pagetable_, va);
+         it.va() < end_file;
+         it += sz, off += sz) {
+        uint8_t* datapg;
+        ssize_t r = ld.get_page(&datapg, ROUNDDOWN(off, PAGESIZE));
+        size_t last_off = ROUNDDOWN(off, PAGESIZE) + r;
+        if (r < 0) {
+            return r;
+        } else if (last_off <= off) {
+            ld.put_page(datapg);
+            return E_NOEXEC;
+        } else {
+            sz = min(last_off - off, min(it.last_va(), end_file) - it.va());
+            memcpy(it.ka<uint8_t*>(), datapg + (off % PAGESIZE), sz);
+            ld.put_page(datapg);
+        }
+    }
 
-    // copy data from executable image into process memory
-    memcpy((uint8_t*) va, data, end_file - va);
-    memset((uint8_t*) end_file, 0, end_mem - end_file);
-
-    // restore early pagetable
-    set_pagetable(early_pagetable);
+    // set initialized memory to zero
+    for (vmiter it(ld.pagetable_, end_file); it.va() < end_mem; it += sz) {
+        sz = min(it.last_va(), end_mem) - it.va();
+        memset(it.ka<uint8_t*>(), 0, sz);
+    }
 
     return 0;
 }

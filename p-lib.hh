@@ -53,6 +53,27 @@ inline uintptr_t syscall0(int syscallno, uintptr_t arg0,
     return rax;
 }
 
+inline uintptr_t syscall0(int syscallno, uintptr_t arg0,
+                          uintptr_t arg1, uintptr_t arg2,
+                          uintptr_t arg3) {
+    register uintptr_t rax asm("rax") = syscallno;
+    register uintptr_t r10 asm("r10") = arg3;
+    asm volatile ("syscall"
+                  : "+a" (rax), "+D" (arg0), "+S" (arg1), "+d" (arg2),
+                    "+r" (r10)
+                  :
+                  : "cc", "rcx", "r8", "r9", "r11");
+    return rax;
+}
+
+inline void clobber_memory(void* ptr) {
+    asm volatile ("" : "+m" (*(char (*)[]) ptr));
+}
+
+inline void access_memory(const void* ptr) {
+    asm volatile ("" : : "m" (*(const char (*)[]) ptr));
+}
+
 
 // sys_getpid
 //    Return current process ID.
@@ -86,8 +107,7 @@ static inline pid_t sys_fork(void) {
 //    Exit this process. Does not return.
 static inline void __attribute__((noreturn)) sys_exit(int status) {
     syscall0(SYSCALL_EXIT, status);
-    while (1) {
-    }
+    assert(false);
 }
 
 static inline int sys_map_console(void* addr) {
@@ -133,6 +153,7 @@ static inline pid_t sys_waitpid(pid_t pid,
 //    Read bytes from `fd` into `buf`. Read at most `sz` bytes. Return
 //    the number of bytes read, which is 0 at EOF.
 inline ssize_t sys_read(int fd, char* buf, size_t sz) {
+    clobber_memory(buf);
     return syscall0(SYSCALL_READ, fd, reinterpret_cast<uintptr_t>(buf), sz);
 }
 
@@ -140,6 +161,7 @@ inline ssize_t sys_read(int fd, char* buf, size_t sz) {
 //    Write bytes to `fd` from `buf`. Write at most `sz` bytes. Return
 //    the number of bytes written.
 inline ssize_t sys_write(int fd, const char* buf, size_t sz) {
+    access_memory(buf);
     return syscall0(SYSCALL_WRITE, fd, reinterpret_cast<uintptr_t>(buf), sz);
 }
 
@@ -155,6 +177,15 @@ inline int sys_close(int fd) {
     return syscall0(SYSCALL_CLOSE, fd);
 }
 
+// sys_open(path, flags)
+//    Open a new file descriptor for pathname `path`. `flags` should
+//    contain at least one of `OF_READ` and `OF_WRITE`.
+inline int sys_open(const char* path, int flags) {
+    access_memory(path);
+    return syscall0(SYSCALL_OPEN, reinterpret_cast<uintptr_t>(path),
+                    flags);
+}
+
 // sys_pipe(pfd)
 //    Create a pipe.
 inline int sys_pipe(int pfd[2]) {
@@ -167,11 +198,81 @@ inline int sys_pipe(int pfd[2]) {
     return r;
 }
 
-// sys_execv(program_name, argv)
-inline int sys_execv(const char* program_name, char* const argv[]) {
+// sys_execv(program_name, argv, argc)
+//    Replace this process image with a new image running `program_name`
+//    with `argc` arguments, stored in argument array `argv`. Returns
+//    only on failure.
+inline int sys_execv(const char* program_name, const char* const* argv,
+                     size_t argc) {
+    access_memory(program_name);
+    access_memory(argv);
     return syscall0(SYSCALL_EXECV,
                     reinterpret_cast<uintptr_t>(program_name),
-                    reinterpret_cast<uintptr_t>(argv));
+                    reinterpret_cast<uintptr_t>(argv), argc);
+}
+
+// sys_execv(program_name, argv)
+//    Replace this process image with a new image running `program_name`
+//    with arguments `argv`. `argv` is a null-terminated array. Returns
+//    only on failure.
+inline int sys_execv(const char* program_name, const char* const* argv) {
+    size_t argc = 0;
+    while (argv && argv[argc] != nullptr) {
+        ++argc;
+    }
+    return sys_execv(program_name, argv, argc);
+}
+
+// sys_unlink(pathname)
+//    Remove the file named `pathname`.
+inline int sys_unlink(const char* pathname) {
+    access_memory(pathname);
+    return syscall0(SYSCALL_UNLINK, reinterpret_cast<uintptr_t>(pathname));
+}
+
+// sys_readdiskfile(filename, buf, sz, off)
+//    Read bytes from disk file `filename` into `buf`. Read at most `sz`
+//    bytes starting at file offset `off`. Return the number of bytes
+//    read, which is 0 at EOF.
+inline ssize_t sys_readdiskfile(const char* filename,
+                                char* buf, size_t sz, size_t off) {
+    clobber_memory(buf);
+    return syscall0(SYSCALL_READDISKFILE,
+                    reinterpret_cast<uintptr_t>(filename),
+                    reinterpret_cast<uintptr_t>(buf), sz, off);
+}
+
+// sys_sync(drop)
+//    Synchronize all modified buffer cache contents to disk. If
+//    `drop` is true, then additionally drop all buffer cache contents,
+//    so that future reads start from an empty cache.
+inline int sys_sync(int drop = 0) {
+    return syscall0(SYSCALL_SYNC, drop);
+}
+
+// sys_lseek(fd, offset, origin)
+//    Set the current file position for `fd` to `off`, relative to
+//    `origin` (one of the `LSEEK_` constants). Returns the new file
+//    position (or, for `LSEEK_SIZE`, the file size).
+inline ssize_t sys_lseek(int fd, ssize_t off, int origin) {
+    return syscall0(SYSCALL_LSEEK, fd, off, origin);
+}
+
+// sys_ftruncate(fd, len)
+//    Set the size of file `fd` to `sz`. If the file was previously
+//    larger, the extra data is lost; if it was shorter, it is extended
+//    with zero bytes.
+inline int sys_ftruncate(int fd, size_t sz) {
+    return syscall0(SYSCALL_FTRUNCATE, fd, sz);
+}
+
+// sys_rename(oldpath, newpath)
+//    Rename the file with name `oldpath` to `newpath`.
+inline int sys_rename(const char* oldpath, const char* newpath) {
+    access_memory(oldpath);
+    access_memory(newpath);
+    return syscall0(SYSCALL_RENAME, reinterpret_cast<uintptr_t>(oldpath),
+                    reinterpret_cast<uintptr_t>(newpath));
 }
 
 // sys_panic(msg)
@@ -183,17 +284,14 @@ static inline pid_t __attribute__((noreturn)) sys_panic(const char* msg) {
 }
 
 
-// OTHER HELPER FUNCTIONS
+// dprintf(fd, format, ...)
+//    Construct a string from `format` and pass it to `sys_write(fd)`.
+//    Returns the number of characters printed, or E_2BIG if the string
+//    could not be constructed.
+int dprintf(int fd, const char* format, ...);
 
-// app_printf(format, ...)
-//    Calls console_printf() (see lib.h). The cursor position is read from
-//    `cursorpos`, a shared variable defined by the kernel, and written back
-//    into that variable. The initial color is based on the current process ID.
-void app_printf(int colorid, const char* format, ...);
-
-
-extern "C" {
-void process_main(void);
-}
+// printf(format, ...)
+//    Like `dprintf(1, format, ...)`.
+int printf(const char* format, ...);
 
 #endif
