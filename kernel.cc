@@ -12,11 +12,13 @@
 volatile unsigned long ticks;   // # timer interrupts so far on CPU 0
 int kdisplay;                   // type of display
 
+spinlock process_hierarchy_lock;
+
 static void kdisplay_ontick();
 static void process_setup(pid_t pid, const char* program_name);
 static void build_init_proc();
 
-int exit(proc* proc);
+int exit(proc* p, int flag);
 
 
 // kernel_start(command)
@@ -34,8 +36,8 @@ void kernel_start(const char* command) {
     }
 
     // make the initial process
-    build_init_proc();
     auto irqs = ptable_lock.lock();
+    build_init_proc();
     process_setup(2, "allocexit");
     ptable_lock.unlock(irqs);
 
@@ -86,9 +88,12 @@ void process_setup(pid_t pid, const char* name) {
     assert(p && npt);
     p->init_user(pid, npt);
 
+    process_hierarchy_lock.lock_noirq();
     p->ppid_ = INIT_PID;
     p->child_links_.reset();
     ptable[INIT_PID]->child_list.push_front(p);
+    p->child_list.reset();
+    process_hierarchy_lock.unlock_noirq();
 
     int r = p->load(name);
     assert(r >= 0);
@@ -208,7 +213,7 @@ int fork(proc* parent, regstate* regs) {
         if (it.pa() == ktext2pa(console)) {
             if (vmiter(p, it.va()).map(ktext2pa(console)) < 0) {
                 // ptable_lock.unlock(irqs);
-                exit(p); kfree(p); kfree(npt);
+                exit(p, 0); kfree(p); kfree(npt);
                 return -1;
             }
             continue;
@@ -216,21 +221,26 @@ int fork(proc* parent, regstate* regs) {
         x86_64_page* pg = kallocpage();
         if (!pg) {
             // ptable_lock.unlock(irqs);
-            exit(p); kfree(p); kfree(npt); kfree(pg); 
+            exit(p, 0); kfree(p); kfree(npt); kfree(pg); 
             return -1;
         }
         memcpy(pg, (void*) it.ka(), PAGESIZE);
         if (vmiter(p, it.va()).map(ka2pa(pg), it.perm()) < 0) {
             // ptable_lock.unlock(irqs);
-            exit(p); kfree(p); kfree(npt); kfree(pg); 
+            exit(p, 0); kfree(p); kfree(npt); kfree(pg); 
             return -1;
         }
     }
     memcpy(p->regs_, regs, sizeof(regstate));
     // reparent the new process
+ 
+    auto irqsp = process_hierarchy_lock.lock();
     p->ppid_ = parent->pid_;
     p->child_links_.reset();
     parent->child_list.push_front(p);
+    p->child_list.reset();
+    process_hierarchy_lock.unlock(irqsp);
+
     // put the proc on the runq
     int cpu = pid % ncpu;
     cpus[cpu].runq_lock_.lock_noirq();
@@ -241,47 +251,37 @@ int fork(proc* parent, regstate* regs) {
     return pid;
 }
 
-int exit(proc* proc) {
+int exit(proc* p, int flag) {
     auto irqs = ptable_lock.lock();
-    pid_t pid = proc->pid_;
-    proc->state_ = proc::exited;
+    pid_t pid = p->pid_;
+    p->state_ = proc::exited;
     ptable[pid] = nullptr;
+    proc* init_p = ptable[INIT_PID];
     ptable_lock.unlock(irqs);
     assert(!ptable[pid]);
 
-
-
-    // reparent the children of america lololololol --- kill me
-    /* auto irqs_phl = ptable_lock.lock();
-    
-    // loop through all children
-    // I ALSO NEED TO PARENT THE CHILDREN TO START WITH IN FORK
-    assert(proc);
-    auto init_p = nullptr;
-    auto p_ = proc->child_list.front();
-    while (!p_) {
-
-    // for (auto p_ = proc->child_list.front(); p_; p_ = proc->child_list.next(p_)) {
-        init_p = ptable[INIT_PID];
-        p_->ppid_ = 0;
-        init_p->child_list.push_front(p_);
-    // }
-
-        p_ = child_list.next(p_);
+    auto irqsp = process_hierarchy_lock.lock();
+    if (flag) {
+        p->child_links_.erase();
+        proc* p_ = p->child_list.front();
+        while (p_) {
+            auto next = p->child_list.next(p_);
+            p_->ppid_ = INIT_PID;
+            p_->child_links_.erase();
+            init_p->child_list.push_front(p_);
+            p_ = next;
+        } 
     }
-
-    ptable_lock.unlock(irqs_phl); */
-
-
+    process_hierarchy_lock.unlock(irqsp);
 
     // free the process's memory 
-    for (vmiter it(proc); it.low(); it.next()) {
+    for (vmiter it(p); it.low(); it.next()) {
         if (it.user() && it.present() && it.pa() != ktext2pa(console)) { 
             kfree((void*) it.ka());
         }
     }
     // free the process's page tabeles
-    for (ptiter it(proc); it.low(); it.next()) {
+    for (ptiter it(p); it.low(); it.next()) {
         kfree((void*) pa2ka(it.ptp_pa()));
     }
     return 0;
@@ -338,8 +338,8 @@ uintptr_t proc::syscall(regstate* regs) {
     }
 
     case SYSCALL_EXIT: {
-        exit(this);
-        return 0;
+        exit(this, 1);
+        this->yield_noreturn();
     }
 
     case SYSCALL_MSLEEP: {

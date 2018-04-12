@@ -105,11 +105,11 @@ void cpustate::schedule(proc* yielding_from) {
             if (current_->state_ == proc::exited) {
                 kfree(current_->pagetable_);
                 kfree(current_);
-                p = 0;
+                p = nullptr;
             }
             current_ = yielding_from = nullptr;
             // re-enqueue `p` at end of run queue if runnable
-            if (p->state_ == proc::runnable) {
+            if (p && p->state_ == proc::runnable) {
                 enqueue(p);
             }
             // switch to a safe page table
