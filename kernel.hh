@@ -31,9 +31,9 @@ struct page {
 struct __attribute__((aligned(4096))) proc {
     // These three members must come first:
     pid_t pid_;                        // process ID
-    pid_t ppid_;                       // parent process ID
     regstate* regs_;                   // process's current registers
     yieldstate* yields_;               // process's current yield state
+    pid_t ppid_;                       // parent process ID
 
     enum state_t {
         blank = 0, runnable, blocked, broken, exited
@@ -42,8 +42,13 @@ struct __attribute__((aligned(4096))) proc {
     x86_64_pagetable* pagetable_;      // process's page table
 
     list_links runq_links_;
+    list_links child_links1; 
+    list_links child_links2; 
+    list_links child_links3; 
+    list_links child_links4; 
 
     list_links child_links_;            // link for child pids
+
 
     list<proc, &proc::child_links_> child_list;
 
@@ -76,7 +81,6 @@ struct __attribute__((aligned(4096))) proc {
 #define NPROC 16
 extern proc* ptable[NPROC];
 extern spinlock ptable_lock;
-extern spinlock process_hierarchy_lock;
 #define KTASKSTACK_SIZE  4096
 
 // allocate a new `proc` and call its constructor

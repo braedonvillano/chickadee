@@ -17,7 +17,7 @@ static uintptr_t next_free_pa;
 
 void print_struct();
 page pages[600];
-struct list<page, &page::link_> lists[10];
+list<page, &page::link_> lists[10];
 
 x86_64_page* kallocpage() {
     // auto irqs = page_lock.lock();
@@ -53,6 +53,7 @@ x86_64_page* kallocpage() {
 //    after `physical_ranges` is initialized.
 void init_kalloc() {
     auto irqs = page_lock.lock();
+    // log_printf("(IK) page lock");
 
     // initialize the pages array
     for (int i = 0; i < ALL_PGS; ++i) {
@@ -90,6 +91,7 @@ void init_kalloc() {
     }
 
     page_lock.unlock(irqs);
+    // log_printf("(IK) page unlock");
 }
 
 // kalloc(sz)
@@ -101,6 +103,8 @@ void* kalloc(size_t sz) {
     if (req_ord > MAX_ORD || sz == 0) return nullptr;
 
     auto irqs = page_lock.lock();
+    // log_printf("(KA) page lock");
+
     // if non-empty list, return block to user
     if (!lists[n].empty()) {
         page* p = lists[n].pop_front();
@@ -111,6 +115,7 @@ void* kalloc(size_t sz) {
             pages[i].free = false;
         }
         page_lock.unlock(irqs);
+        // log_printf("(KA) page unlock");
         return (void*) pa2ka(pn * PAGESIZE);
     }
     // find the next non-empty list
@@ -124,6 +129,7 @@ void* kalloc(size_t sz) {
     // return null if no memory to alloc
     if (!block) {
         page_lock.unlock(irqs);
+        // log_printf("(KA) page unlock");
         return nullptr; 
     } 
     assert(pages[block->pn].block);
@@ -149,6 +155,7 @@ void* kalloc(size_t sz) {
         pages[k].order = ret_ord;
     }
     page_lock.unlock(irqs);
+    // log_printf("(KA) page unlock");
     return (void*) pa2ka(block->pn * PAGESIZE);
 }
 
@@ -158,6 +165,7 @@ void* kalloc(size_t sz) {
 void kfree(void* ptr) {
     if (!ptr) return;
     auto irqs = page_lock.lock();
+    // log_printf("(KF) page lock");
 
     // uintptr_t addr = (uintptr_t) ptr;
     uintptr_t addr = ka2pa(ptr);
@@ -195,6 +203,7 @@ void kfree(void* ptr) {
     pages[pgn].link_.reset();
     lists[ord - MIN_ORD].push_back(&pages[pgn]);
     page_lock.unlock(irqs);
+    // log_printf("(KF) page unlock");
 }
 
 // test_kalloc

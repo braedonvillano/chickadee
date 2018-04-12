@@ -11,11 +11,12 @@
 volatile unsigned long ticks;   // # timer interrupts so far on CPU 0
 int kdisplay;                   // type of display
 
+spinlock process_hierarchy_lock;
+
 static void kdisplay_ontick();
 static void process_setup(pid_t pid, const char* program_name);
 static void build_init_proc();
-
-int exit(proc* proc);
+static void exit(proc* proc, int flag);
 
 
 // kernel_start(command)
@@ -33,8 +34,8 @@ void kernel_start(const char* command) {
     }
 
     // make the initial process
-    build_init_proc();
     auto irqs = ptable_lock.lock();
+    build_init_proc();
     process_setup(2, "allocexit");
     ptable_lock.unlock(irqs);
 
@@ -51,6 +52,8 @@ void build_init_proc() {
     p->init_user(INIT_PID, npt);
 
     p->ppid_ = INIT_PID;
+    p->child_list.reset();
+    assert(p->child_list.empty());
 
     int r = p->load("initproc");
     assert(r >= 0);
@@ -78,7 +81,6 @@ void process_setup(pid_t pid, const char* name) {
 #ifdef CHICKADEE_FIRST_PROCESS
     name = CHICKADEE_FIRST_PROCESS;
 #endif
-
     assert(!ptable[pid]);
     proc* p = ptable[pid] = kalloc_proc();
     x86_64_pagetable* npt = kalloc_pagetable();
@@ -87,7 +89,10 @@ void process_setup(pid_t pid, const char* name) {
 
     p->ppid_ = INIT_PID;
     p->child_links_.reset();
+    p->child_list.reset();
+    assert(p->child_list.empty());
     ptable[INIT_PID]->child_list.push_front(p);
+    assert(p->child_links_.is_linked());
 
     int r = p->load(name);
     assert(r >= 0);
@@ -134,8 +139,9 @@ void proc::exception(regstate* regs) {
             kdisplay_ontick();
         }
         lapicstate::get().ack();
-        this->regs_ = regs;
-        this->yield_noreturn();
+        // this->regs_ = regs;
+        // this->yield_noreturn();
+        this->yield();
         break;                  /* will not be reached */
     }
 
@@ -175,6 +181,7 @@ void proc::exception(regstate* regs) {
 
 int fork(proc* parent, regstate* regs) {
     auto irqs = ptable_lock.lock();
+    // log_printf("(F) ptable lock -> parent: %d\n", parent->pid_);
     proc* p = nullptr;
     pid_t pid = 0;
     // go through ptable to find open proc
@@ -190,6 +197,7 @@ int fork(proc* parent, regstate* regs) {
     if (!pid || !p || !npt) {
         ptable[pid] = nullptr;
         ptable_lock.unlock(irqs);
+        // log_printf("(F) ptable unlock -> parent: %d\n", parent->pid_);
         kfree(p); kfree(npt);
         return -1;
     }    
@@ -202,7 +210,8 @@ int fork(proc* parent, regstate* regs) {
         if (it.pa() == ktext2pa(console)) {
             if (vmiter(p, it.va()).map(ktext2pa(console)) < 0) {
                 // ptable_lock.unlock(irqs);
-                exit(p); kfree(p); kfree(npt);
+                // log_printf("(F) ptable unlock -> parent: %d\n", parent->pid_);
+                exit(p, 0); kfree(p); kfree(npt); 
                 return -1;
             }
             continue;
@@ -210,75 +219,87 @@ int fork(proc* parent, regstate* regs) {
         x86_64_page* pg = kallocpage();
         if (!pg) {
             // ptable_lock.unlock(irqs);
-            exit(p); kfree(p); kfree(npt); kfree(pg); 
+            // log_printf("(F) ptable unlock -> parent: %d\n", parent->pid_);
+            exit(p, 0); kfree(p); kfree(npt); kfree(pg); 
             return -1;
         }
         memcpy(pg, (void*) it.ka(), PAGESIZE);
         if (vmiter(p, it.va()).map(ka2pa(pg), it.perm()) < 0) {
             // ptable_lock.unlock(irqs);
-            exit(p); kfree(p); kfree(npt); kfree(pg); 
+            // log_printf("(F) ptable unlock -> parent: %d\n", parent->pid_);
+            exit(p, 0); kfree(p); kfree(npt); kfree(pg);  
             return -1;
         }
     }
     memcpy(p->regs_, regs, sizeof(regstate));
+    p->regs_->reg_rax = 0;
     // reparent the new process
+
+    auto irqsp = process_hierarchy_lock.lock();
     p->ppid_ = parent->pid_;
     p->child_links_.reset();
     parent->child_list.push_front(p);
+    p->child_list.reset();
+    process_hierarchy_lock.unlock(irqsp);
+
     // put the proc on the runq
     int cpu = pid % ncpu;
     cpus[cpu].runq_lock_.lock_noirq();
     cpus[cpu].enqueue(p);
     cpus[cpu].runq_lock_.unlock_noirq();
-    p->regs_->reg_rax = 0;
     // ptable_lock.unlock(irqs);
+    // log_printf("(F) ptable unlock -> parent: %d, child: %d\n", parent->pid_, p->pid_);
     return pid;
 }
 
-int exit(proc* proc) {
-    auto irqs = ptable_lock.lock();
-    pid_t pid = proc->pid_;
-    proc->state_ = proc::exited;
-    ptable[pid] = nullptr;
-    ptable_lock.unlock(irqs);
-    assert(!ptable[pid]);
-
-
-
-    // reparent the children of america lololololol --- kill me
-    /* auto irqs_phl = ptable_lock.lock();
-    
-    // loop through all children
-    // I ALSO NEED TO PARENT THE CHILDREN TO START WITH IN FORK
-    assert(proc);
-    auto init_p = nullptr;
-    auto p_ = proc->child_list.front();
-    while (!p_) {
-
-    // for (auto p_ = proc->child_list.front(); p_; p_ = proc->child_list.next(p_)) {
-        init_p = ptable[INIT_PID];
-        p_->ppid_ = 0;
+/* void __attribute__((noreturn)) exit_(proc* p) {
+    (void) exit(p);
+    auto irqsp = process_hierarchy_lock.lock();
+    p->child_links_.erase();
+    for (proc* p_ = p->child_list.front(); p_; p_ = p->child_list.next(p_)) {
+        p_->ppid_ = 1;
+        p_->child_links_.erase();
         init_p->child_list.push_front(p_);
-    // }
-
-        p_ = child_list.next(p_);
     }
+    process_hierarchy_lock.unlock(irqsp);
+    p->yield_noreturn();
+} */
 
-    ptable_lock.unlock(irqs_phl); */
+void exit(proc* p, int flag) {
+    auto irqs = ptable_lock.lock();
+    // log_printf("(E) ptable lock -> parent: %d\n", p->pid_);
+    pid_t pid = p->pid_;
+    p->state_ = proc::exited;
+    ptable[pid] = nullptr;
+    proc* init_p = ptable[INIT_PID];
+    assert(!ptable[pid]);
+    ptable_lock.unlock(irqs);
 
-
+    auto irqsp = process_hierarchy_lock.lock();
+    if (flag) {
+        p->child_links_.erase();
+        proc* p_ = p->child_list.front();
+        while (p_) {
+            auto next = p->child_list.next(p_);
+            p_->ppid_ = INIT_PID;
+            p_->child_links_.erase();
+            init_p->child_list.push_front(p_);
+            p_ = next;
+        } 
+    }
+    process_hierarchy_lock.unlock(irqsp);
+    // log_printf("(E) ptable unlock -> parent: %d\n", p->pid_);
 
     // free the process's memory 
-    for (vmiter it(proc); it.low(); it.next()) {
+    for (vmiter it(p); it.low(); it.next()) {
         if (it.user() && it.present() && it.pa() != ktext2pa(console)) { 
             kfree((void*) it.ka());
         }
     }
     // free the process's page tabeles
-    for (ptiter it(proc); it.low(); it.next()) {
+    for (ptiter it(p); it.low(); it.next()) {
         kfree((void*) pa2ka(it.ptp_pa()));
-    }
-    return 0;
+    }    
 }
 
 
@@ -306,9 +327,12 @@ uintptr_t proc::syscall(regstate* regs) {
     case SYSCALL_GETPID:
         return pid_;
 
-    case SYSCALL_YIELD:
-        this->yield();
-        return 0;
+    case SYSCALL_YIELD: {
+        this->regs_ = regs;
+        regs->reg_rax = 0;
+        this->yield_noreturn(); // NB does not return
+        break;
+    }
 
     case SYSCALL_PAGE_ALLOC: {
         uintptr_t addr = regs->reg_rdi;
@@ -332,8 +356,8 @@ uintptr_t proc::syscall(regstate* regs) {
     }
 
     case SYSCALL_EXIT: {
-        exit(this);
-        return 0;
+        exit(this, 1);
+        this->yield_noreturn();
     }
 
     case SYSCALL_MSLEEP: {
