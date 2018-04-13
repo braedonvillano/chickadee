@@ -8,11 +8,6 @@ uint8_t* stack_bottom;
 
 void process_main(void) {
     sys_kdisplay(KDISPLAY_MEMVIEWER);
-    // i like this color for my qemu, please don't judge me
-    for (int i = 0; i < CONSOLE_ROWS * CONSOLE_COLUMNS; ++i) {
-      console[i] = '*' | 0x3000;
-    }
-
     // Process 1 never allocates; it alternates between forking children
     // and yielding. Each forked child allocates.
     while (1) {
@@ -40,6 +35,10 @@ void process_main(void) {
 
     // Allocate heap pages until (1) hit the stack (out of address space)
     // or (2) allocation fails (out of physical memory).
+    int pagealloc = 0;
+    int sysfork = 0;
+    int sysexit = 0;
+    int count = 0;
     while (1) {
         int x = rand(0, 8 * ALLOC_SLOWDOWN - 1);
         if (x < 8 * p && heap_top != stack_bottom) {
@@ -58,5 +57,6 @@ void process_main(void) {
             (void) sys_waitpid(0, nullptr, W_NOHANG);
             sys_yield();
         }
+        count++;
     }
 }

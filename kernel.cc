@@ -20,6 +20,8 @@ static void build_init_proc();
 
 int exit(proc* p, int flag);
 
+int count = 0;
+
 
 // kernel_start(command)
 //    Initialize the hardware and processes and start running. The `command`
@@ -206,7 +208,6 @@ int fork(proc* parent, regstate* regs) {
     }    
     p->init_user(pid, npt);
     ptable_lock.unlock(irqs);
-
     // loop through virtual memory and copy to child
     for (vmiter it(parent); it.low(); it.next()) {
         if (!it.user() || !it.present()) continue;
@@ -221,26 +222,26 @@ int fork(proc* parent, regstate* regs) {
         x86_64_page* pg = kallocpage();
         if (!pg) {
             // ptable_lock.unlock(irqs);
+            count++;
             exit(p, 0); kfree(p); kfree(npt); kfree(pg); 
             return -1;
         }
         memcpy(pg, (void*) it.ka(), PAGESIZE);
         if (vmiter(p, it.va()).map(ka2pa(pg), it.perm()) < 0) {
             // ptable_lock.unlock(irqs);
+            count++;
             exit(p, 0); kfree(p); kfree(npt); kfree(pg); 
             return -1;
         }
     }
     memcpy(p->regs_, regs, sizeof(regstate));
     // reparent the new process
- 
     auto irqsp = process_hierarchy_lock.lock();
     p->ppid_ = parent->pid_;
     p->child_links_.reset();
     parent->child_list.push_front(p);
     p->child_list.reset();
     process_hierarchy_lock.unlock(irqsp);
-
     // put the proc on the runq
     int cpu = pid % ncpu;
     cpus[cpu].runq_lock_.lock_noirq();
@@ -248,6 +249,8 @@ int fork(proc* parent, regstate* regs) {
     cpus[cpu].runq_lock_.unlock_noirq();
     p->regs_->reg_rax = 0;
     // ptable_lock.unlock(irqs);
+    count = 0;
+
     return pid;
 }
 

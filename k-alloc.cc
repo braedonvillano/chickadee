@@ -53,7 +53,6 @@ x86_64_page* kallocpage() {
 //    after `physical_ranges` is initialized.
 void init_kalloc() {
     auto irqs = page_lock.lock();
-
     // initialize the pages array
     for (int i = 0; i < ALL_PGS; ++i) {
         pages[i].pn = i;
@@ -61,7 +60,6 @@ void init_kalloc() {
         pages[i].free = false;
         pages[i].block = false;
     }
-
     int pn, blk_ord;
     uintptr_t curr_pa = 0;
     // we can make this better by using lsb to check the alignment?
@@ -203,12 +201,25 @@ void test_kalloc() {
     // do nothing for now
 }
 
-void print_struct() {
+void print_struct_info() {
     for (int i = 0; i < 10; i++) {
         log_printf("List %d:  ", i + 12);
         page* next = lists[i].front();
         while (next) {
             log_printf("[p: %d o: %d f: %d]", next->pn, next->order, next->free);
+            log_printf(" -> ");
+            next = lists[i].next(next);
+        }
+        log_printf("null\n");
+    }
+}
+
+void print_struct() {
+    for (int i = 0; i < 10; i++) {
+        log_printf("List %d:  ", i + 12);
+        page* next = lists[i].front();
+        while (next) {
+            log_printf("[x]", next->pn, next->order, next->free);
             log_printf(" -> ");
             next = lists[i].next(next);
         }
