@@ -32,6 +32,7 @@ void cpustate::init() {
     idle_task_ = nullptr;
     nschedule_ = 0;
     spinlock_depth_ = 0;
+    canary_ = CANARY;
 
     // now initialize the CPU hardware
     init_cpu_hardware();

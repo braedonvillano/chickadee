@@ -12,7 +12,7 @@ int kdisplay;                   // type of display
 
 static void kdisplay_ontick();
 static void process_setup(pid_t pid, const char* program_name);
-
+static void canary_check(proc* p = nullptr);
 
 // kernel_start(command)
 //    Initialize the hardware and processes and start running. The `command`
@@ -82,7 +82,7 @@ void proc::exception(regstate* regs) {
     // It can be useful to log events using `log_printf`.
     // Events logged this way are stored in the host's `log.txt` file.
     /*log_printf("proc %d: exception %d\n", this->pid_, regs->reg_intno);*/
-    
+
     assert(read_rbp() % 16 == 0);
     // Show the current cursor location.
     console_show_cursor(cursorpos);
@@ -187,7 +187,18 @@ int fork(proc* parent, regstate* regs) {
     cpus[cpu].runq_lock_.lock_noirq();
     cpus[cpu].enqueue(p);
     cpus[cpu].runq_lock_.unlock_noirq();
+    canary_check(parent);
     return pid;
+}
+
+// i want to make this a kernel task
+void canary_check(proc* p) {
+    if (p) {
+        assert(p->canary_ == CANARY);
+    }
+    for (int i = 0; i < ncpu; ++i) {
+        assert(cpus[i].canary_ == CANARY);
+    }
 }
 
 
@@ -208,6 +219,7 @@ uintptr_t proc::syscall(regstate* regs) {
             console_clear();
         }
         kdisplay = regs->reg_rdi;
+        canary_check(this);
         return 0;
 
     case SYSCALL_PANIC:
@@ -219,6 +231,7 @@ uintptr_t proc::syscall(regstate* regs) {
 
     case SYSCALL_YIELD:
         this->yield();
+        canary_check(this);
         return 0;
 
     case SYSCALL_PAGE_ALLOC: {
@@ -230,6 +243,7 @@ uintptr_t proc::syscall(regstate* regs) {
         if (!pg || vmiter(this, addr).map(ka2pa(pg)) < 0) {
             return -1;
         }
+        canary_check(this);
         return 0;
     }
 
@@ -242,6 +256,7 @@ uintptr_t proc::syscall(regstate* regs) {
         if (r < 0) {
             return -1;
         }
+        canary_check(this);
         return 0;
     }
 
@@ -256,6 +271,12 @@ uintptr_t proc::syscall(regstate* regs) {
 
     case SYSCALL_FORK: {
         return fork(this, regs);
+    }
+
+    case SYSCALL_CORRUPT: {
+        memset(this, '?', 3000);
+        canary_check(this);
+        return 0;
     }
 
     case SYSCALL_READ: {
@@ -295,6 +316,7 @@ uintptr_t proc::syscall(regstate* regs) {
         }
 
         kbd.lock_.unlock(irqs);
+        canary_check(this);
         return n;
     }
 
@@ -315,6 +337,7 @@ uintptr_t proc::syscall(regstate* regs) {
         }
 
         csl.lock_.unlock(irqs);
+        canary_check(this);
         return n;
     }
 

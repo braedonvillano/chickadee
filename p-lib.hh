@@ -96,6 +96,12 @@ static inline int sys_map_console(void* addr) {
     return syscall0(SYSCALL_MAP_CONSOLE, reinterpret_cast<uintptr_t>(addr));
 }
 
+// sys_corrupt() 
+//    This is used in the pset to prove that stack canaries work.
+static inline int sys_corrupt() {
+    return syscall0(SYSCALL_CORRUPT);
+}
+
 // sys_pause()
 //    A version of `sys_yield` that spins in the kernel long enough
 //    for kernel timer interrupts to occur.

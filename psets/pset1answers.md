@@ -82,7 +82,16 @@ Answers to written questions
 3. I would like to note that I am working off the original handout, so I changed `proc::yield` assembly that mirrors code in a future commit to help solve this problem. Other than that, fixing these alignment problems essentially came from subtracting values from the stack pointer as necessary. 
 
 #PART F
-1. 
+1. Added the syscall below (it's still in kernel.cc too):
+	`case SYSCALL_CORRUPT: {
+        memset(this, '?', 3000);
+        canary_check(this);
+        return 0;
+    }`
+
+2. I added the members for the canaries to the proc strucs and the cpustate struct. I set the values of each in their initialization functions. Both canaries, in `proc::init_user` and `cpustate::init` were set to `0xDEADBEEF`. At the end of each system call I have a very simple helper function that checks the current process, and gratiously checks all the CPU's task stack. I played around with having the helper function check everything (as in all processes), but it did not seem entirely necessary because the kernel stack at the end of each struct will grow, conditionally, during kernel mode; in which case the canary is likely to be checked. The canaries I added were sucessful when used with my corrupting system call.
+
+3. The `-Wstack-usage` flag for GCC did not seem to detect the problem I added in step one. My best guess is that my syscall doesn't make use of some recursive function to grow the stack, and is therefore undetected? I am not entirely sure. 
 
 Grading notes
 -------------

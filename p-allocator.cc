@@ -17,8 +17,10 @@ void process_main(void) {
     // map the console and update it
     sys_map_console(console);
     for (int i = 0; i < CONSOLE_ROWS * CONSOLE_COLUMNS; ++i) {
-      console[i] = '*' | 0x5000;
+        console[i] = '*' | 0x3000;
     }
+
+    // sys_corrupt();
 
     // The heap starts on the page right after the 'end' symbol,
     // whose address is the first address not allocated to process code
