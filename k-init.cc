@@ -298,6 +298,7 @@ extern bool ap_init_allowed;
 }
 
 void cpustate::init_ap() {
+    assert(read_rbp() % 16 == 0);
     init();
     ap_entry_lock.unlock_noirq();
     schedule(nullptr);

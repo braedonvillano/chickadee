@@ -19,6 +19,7 @@ static void process_setup(pid_t pid, const char* program_name);
 //    string is an optional string passed from the boot loader.
 
 void kernel_start(const char* command) {
+    assert(read_rbp() % 16 == 0);
     init_hardware();
     console_clear();
     kdisplay = KDISPLAY_MEMVIEWER;
@@ -81,7 +82,8 @@ void proc::exception(regstate* regs) {
     // It can be useful to log events using `log_printf`.
     // Events logged this way are stored in the host's `log.txt` file.
     /*log_printf("proc %d: exception %d\n", this->pid_, regs->reg_intno);*/
-
+    
+    assert(read_rbp() % 16 == 0);
     // Show the current cursor location.
     console_show_cursor(cursorpos);
 
@@ -197,6 +199,8 @@ int fork(proc* parent, regstate* regs) {
 //    process in `%rax`.
 
 uintptr_t proc::syscall(regstate* regs) {
+    assert(read_rbp() % 16 == 0);
+
     switch (regs->reg_rax) {
 
     case SYSCALL_KDISPLAY:

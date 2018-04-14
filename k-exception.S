@@ -230,26 +230,15 @@ _ZN4proc5yieldEv:
         pushq %rbx
         pushq %rbp
 
-        // check if interrupts are disabled
-        testq $EFLAGS_IF, 48(%rsp)
-        jnz 1f
-        // if interrupts are disabled, momentarily enable them.
-        // This bounds interrupt delay to the time it takes a
-        // single kernel task to yield.
-        // Note that `sti; cli` would not work! `sti` only enables
-        // external, maskable interrupts at the end of the *next*
-        // instruction. A no-op instruction is required.
-        sti
-        movq (%rsp), %rax     // any delayed interrupts will happen here
-
-1:      // disable interrupts, store yieldstate pointer,
-        // switch to cpustack
-        cli
+        // store yieldstate pointer
         movq %rsp, 16(%rdi)
+
+        // disable interrupts, switch to cpustack
+        cli
         movq %rdi, %rsi
         movq %gs:(0), %rdi
         leaq CPUSTACK_SIZE(%rdi), %rsp
-
+        subq $8, %rsp
         // call scheduler
         jmp _ZN8cpustate8scheduleEP4proc
 
@@ -262,7 +251,7 @@ _ZN4proc14yield_noreturnEv:
         movq %rdi, %rsi
         movq %gs:(0), %rdi
         leaq CPUSTACK_SIZE(%rdi), %rsp
-
+        subq $8, %rsp
         // jump to scheduler
         jmp _ZN8cpustate8scheduleEP4proc
 
@@ -413,6 +402,7 @@ ap_rest:
         leaq CPUSTACK_SIZE(%rdi), %rsp
         // call `cpus[my_CPU_number].init_ap()`.
         // This two-stage jump switches to high virtual addresses.
+        subq $8, %rsp
         movabsq $_ZN8cpustate7init_apEv, %rbx
         jmp *%rbx
 

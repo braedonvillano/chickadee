@@ -55,6 +55,33 @@ Answers to written questions
 1. I made sure to hold the `ptable_lock` while doing any reads-writes to the ptable. I first found an available process pid, and then allocated a page for the proc struct and the initial pagetable. I then mapped all of the memory that the parent had to the child (making sure to handle for the console), and copied the registers. After that, I enqueued the new process on the CPU's runq_.
 
 #PART E
+1. The entry points are listed in described below:
+	a) `process_main()` is *correctly* aligned
+    	- entry point jumping from assembly to user processes
+
+	b) `kernel_start()` is *correctly* aligned
+    	- called after the bootloader loads the kernel
+
+	c) `proc::exception(regstate*)` is *correctly* aligned
+    	- called when an exception is thrown
+
+	d) `proc::syscall(regstate*)` is *correctly* aligned
+    	- called when a process makes a system call
+
+	e) `cpustate::schedule(proc*)` is *incorrectly* aligned
+    	- called when a process yields and the kernel calls cpu scheduler
+
+	f) `cpustate::init_ap()` is *incorrectly* aligned
+    	- called when a processor is being initialized
+
+	g) `idle()` is *correctly* aligned
+    	- entry point jumping from assembly to kernel tasks
+
+2. I have added asserts to all of the above functions (exempting process_main of course). 
+
+3. I would like to note that I am working off the original handout, so I changed `proc::yield` assembly that mirrors code in a future commit to help solve this problem. Other than that, fixing these alignment problems essentially came from subtracting values from the stack pointer as necessary. 
+
+#PART F
 1. 
 
 Grading notes

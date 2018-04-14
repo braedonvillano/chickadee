@@ -75,6 +75,7 @@ void cpustate::enqueue(proc* p) {
 //    run `yielding_from` unless no other runnable process exists.
 
 void cpustate::schedule(proc* yielding_from) {
+    assert(read_rbp() % 16 == 0);
     assert(contains(read_rsp()));  // running on CPU stack
     assert(is_cli());              // interrupts are currently disabled
     assert(spinlock_depth_ == 0);  // no spinlocks are held
@@ -130,6 +131,7 @@ void cpustate::schedule(proc* yielding_from) {
 //    has nothing better to do.
 
 void idle(proc*) {
+    assert(read_rbp() % 16 == 0);
     while (1) {
         asm volatile("hlt");
     }
