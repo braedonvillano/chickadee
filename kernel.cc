@@ -177,6 +177,18 @@ uintptr_t proc::syscall(regstate* regs) {
         return 0;
     }
 
+    case SYSCALL_MAP_CONSOLE: {
+        uintptr_t addr = regs->reg_rdi;
+        if (addr >= VA_LOWMAX || addr & PAGEOFFMASK) {
+            return -1;
+        }
+        int r = vmiter(this, addr).map(ktext2pa(console), PTE_P | PTE_W | PTE_U);
+        if (r < 0) {
+            return -1;
+        }
+        return 0;
+    }
+
     case SYSCALL_PAUSE: {
         sti();
         for (uintptr_t delay = 0; delay < 1000000; ++delay) {

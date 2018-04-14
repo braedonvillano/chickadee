@@ -1,5 +1,5 @@
 #include "p-lib.hh"
-#define ALLOC_SLOWDOWN 100
+#define ALLOC_SLOWDOWN 1
 
 extern uint8_t end[];
 
@@ -13,6 +13,12 @@ void process_main(void) {
 
     pid_t p = sys_getpid();
     srand(p);
+
+    // map the console and update it
+    sys_map_console(console);
+    for (int i = 0; i < CONSOLE_ROWS * CONSOLE_COLUMNS; ++i) {
+      console[i] = '*' | 0x5000;
+    }
 
     // The heap starts on the page right after the 'end' symbol,
     // whose address is the first address not allocated to process code

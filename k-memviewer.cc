@@ -97,6 +97,13 @@ void memusage::refresh() {
             p->unlock_pagetable_read(irqs);
         }
     }
+    // mark idle_tasks and the memviewer
+    for (int i = 0; i < ncpu; ++i) {
+        if (cpus[i].idle_task_) {
+            mark(ka2pa(cpus[i].idle_task_), f_kernel);
+        }
+    }
+    mark(ka2pa(v_), f_kernel);
 }
 
 

@@ -8,7 +8,6 @@ x86_64_page* kallocpage() {
     auto irqs = page_lock.lock();
 
     x86_64_page* p = nullptr;
-
     // skip over reserved and kernel memory
     auto range = physical_ranges.find(next_free_pa);
     while (range != physical_ranges.end()) {
@@ -27,7 +26,6 @@ x86_64_page* kallocpage() {
     page_lock.unlock(irqs);
     return p;
 }
-
 
 // init_kalloc
 //    Initialize stuff needed by `kalloc`. Called from `init_hardware`,
