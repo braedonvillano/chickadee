@@ -157,7 +157,6 @@ int fork(proc* parent, regstate* regs) {
     if (!pid || !p || !npt) {
         ptable[pid] = nullptr;
         ptable_lock.unlock(irqs);
-        kfree(p); kfree(npt);
         return -1;
     }    
     p->init_user(pid, npt);

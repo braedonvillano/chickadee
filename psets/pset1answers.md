@@ -89,9 +89,10 @@ Answers to written questions
         return 0;
     }`
 
-2. I added the members for the canaries to the proc strucs and the cpustate struct. I set the values of each in their initialization functions. Both canaries, in `proc::init_user` and `cpustate::init` were set to `0xDEADBEEF`. At the end of each system call I have a very simple helper function that checks the current process, and gratiously checks all the CPU's task stack. I played around with having the helper function check everything (as in all processes), but it did not seem entirely necessary because the kernel stack at the end of each struct will grow, conditionally, during kernel mode; in which case the canary is likely to be checked. The canaries I added were sucessful when used with my corrupting system call.
+2. I added the members for the canaries to the proc strucs and the cpustate struct. I set the values of each in their initialization functions. Both canaries, in `proc::init_user` and `cpustate::init` were set to `0xDEADBEEF`. At the end of each system call I have a very simple helper function that checks the current process, and gratiously checks all the CPU's task stack. I played around with having the helper function check everything (as in all processes), but it did not seem entirely necessary because the kernel stack at the end of each struct will grow, conditionally, during kernel mode; in which case the canary is likely to be checked (didn't particularly want to hold the lock to check the other processes). The canaries I added were sucessful when used with my corrupting system call.
 
 3. The `-Wstack-usage` flag for GCC did not seem to detect the problem I added in step one. My best guess is that my syscall doesn't make use of some recursive function to grow the stack, and is therefore undetected? I am not entirely sure. 
 
 Grading notes
 -------------
+N/A
