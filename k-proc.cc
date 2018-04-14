@@ -66,6 +66,8 @@ void proc::init_user(pid_t pid, x86_64_pagetable* pt) {
     state_ = proc::runnable;
 
     pagetable_ = pt;
+
+    canary_ = CANARY;
 }
 
 

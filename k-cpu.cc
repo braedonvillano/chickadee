@@ -31,6 +31,7 @@ void cpustate::init() {
     idle_task_ = nullptr;
     nschedule_ = 0;
     spinlock_depth_ = 0;
+    canary_ = CANARY;
 
     // now initialize the CPU hardware
     init_cpu_hardware();
@@ -148,6 +149,7 @@ void cpustate::schedule(proc* yielding_from) {
 //    has nothing better to do.
 
 void idle(proc*) {
+    assert(read_rbp() % 16 == 0);
     while (1) {
         asm volatile("hlt");
     }

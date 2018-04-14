@@ -1,5 +1,6 @@
 #ifndef CHICKADEE_KERNEL_HH
 #define CHICKADEE_KERNEL_HH
+#define CANARY 0xDEADBEEF
 #include "x86-64.h"
 #include "lib.hh"
 #include "k-list.hh"
@@ -80,6 +81,8 @@ struct __attribute__((aligned(4096))) proc {
     inline irqstate lock_pagetable_read();
     inline void unlock_pagetable_read(irqstate& irqs);
 
+    unsigned int canary_;
+
  private:
     static int load_segment(const elf_program& ph, loader& ld);
 };
@@ -134,6 +137,8 @@ struct __attribute__((aligned(4096))) cpustate {
 
     void enable_irq(int irqno);
     void disable_irq(int irqno);
+
+    unsigned int canary_;
 
  private:
     void init_cpu_hardware();

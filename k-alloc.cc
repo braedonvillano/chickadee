@@ -16,6 +16,7 @@ static spinlock page_lock;
 static uintptr_t next_free_pa;
 
 void print_struct();
+void print_struct_info();
 page pages[600];
 struct list<page, &page::link_> lists[10];
 
@@ -86,7 +87,6 @@ void init_kalloc() {
             curr_pa += (num_pgs * PAGESIZE);
         }
     }
-
     page_lock.unlock(irqs);
 }
 

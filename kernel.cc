@@ -17,6 +17,7 @@ spinlock process_hierarchy_lock;
 static void kdisplay_ontick();
 static void process_setup(pid_t pid, const char* program_name);
 static void build_init_proc();
+static void canary_check(proc* p = nullptr);
 
 int exit(proc* p, int flag);
 
@@ -28,6 +29,7 @@ int count = 0;
 //    string is an optional string passed from the boot loader.
 
 void kernel_start(const char* command) {
+    assert(read_rbp() % 16 == 0);
     init_hardware();
     console_clear();
     kdisplay = KDISPLAY_MEMVIEWER;
@@ -127,6 +129,7 @@ void proc::exception(regstate* regs) {
     // It can be useful to log events using `log_printf`.
     // Events logged this way are stored in the host's `log.txt` file.
     /*log_printf("proc %d: exception %d\n", this->pid_, regs->reg_intno);*/
+    assert(read_rbp() % 16 == 0);
 
     // Show the current cursor location.
     console_show_cursor(cursorpos);
@@ -185,6 +188,11 @@ void proc::exception(regstate* regs) {
     // If exception arrived in user mode, the process must be runnable.
     assert((regs->reg_cs & 3) == 0 || this->state_ == proc::runnable);
 }
+
+// syscall helper functions below
+//    Fork helper function to make process children
+//    Exit helper function that essentially clears processes
+//    Canary check function ensures structs arent corrupted
 
 int fork(proc* parent, regstate* regs) {
     auto irqs = ptable_lock.lock();
@@ -248,6 +256,7 @@ int fork(proc* parent, regstate* regs) {
     cpus[cpu].enqueue(p);
     cpus[cpu].runq_lock_.unlock_noirq();
     p->regs_->reg_rax = 0;
+    canary_check(parent);
     // ptable_lock.unlock(irqs);
     count = 0;
 
@@ -290,6 +299,15 @@ int exit(proc* p, int flag) {
     return 0;
 }
 
+void canary_check(proc* p) {
+    if (p) {
+        assert(p->canary_ == CANARY);
+    }
+    for (int i = 0; i < ncpu; ++i) {
+        assert(cpus[i].canary_ == CANARY);
+    }
+}
+
 
 // proc::syscall(regs)
 //    System call handler.
@@ -299,6 +317,7 @@ int exit(proc* p, int flag) {
 //    process in `%rax`.
 
 uintptr_t proc::syscall(regstate* regs) {
+    assert(read_rbp() % 16 == 0);
     switch (regs->reg_rax) {
 
     case SYSCALL_KDISPLAY:
@@ -306,6 +325,7 @@ uintptr_t proc::syscall(regstate* regs) {
             console_clear();
         }
         kdisplay = regs->reg_rdi;
+        canary_check(this);
         return 0;
 
     case SYSCALL_PANIC:
@@ -328,6 +348,7 @@ uintptr_t proc::syscall(regstate* regs) {
         if (!pg || vmiter(this, addr).map(ka2pa(pg)) < 0) {
             return -1;
         }
+        canary_check(this);
         return 0;
     }
 
@@ -346,7 +367,6 @@ uintptr_t proc::syscall(regstate* regs) {
     }
 
     case SYSCALL_MSLEEP: {
-        // perhaps i should be handles the proc state_?
         unsigned long want_ticks = ticks + (regs->reg_rdi + 9) / 10;
         sti();
         while (long(want_ticks - ticks) > 0) {
@@ -369,6 +389,7 @@ uintptr_t proc::syscall(regstate* regs) {
         if (r < 0) {
             return -1;
         }
+        canary_check(this);
         return 0;
     }
 
