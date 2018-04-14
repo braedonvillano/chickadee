@@ -49,6 +49,13 @@ Answers to written questions
 	mark(ka2pa(v_), f_kernel);`
 
 #PART C
+1. Made sure to check for valid addresses from the user's arguments, then mapped the console using `vmiter`. 
+
+#PART D
+1. I made sure to hold the `ptable_lock` while doing any reads-writes to the ptable. I first found an available process pid, and then allocated a page for the proc struct and the initial pagetable. I then mapped all of the memory that the parent had to the child (making sure to handle for the console), and copied the registers. After that, I enqueued the new process on the CPU's runq_.
+
+#PART E
+1. 
 
 Grading notes
 -------------

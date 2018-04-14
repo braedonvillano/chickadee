@@ -136,6 +136,58 @@ void proc::exception(regstate* regs) {
     assert(this->state_ == proc::runnable);
 }
 
+// syscall helper functions below
+//    Currently we have fork, and will work towards exit
+int fork(proc* parent, regstate* regs) {
+    auto irqs = ptable_lock.lock();
+    proc* p = nullptr;
+    pid_t pid = 0;
+    // go through ptable to find open proc
+    for (pid_t i = 1; i < NPROC; i++) {
+        if (!ptable[i]) {
+            pid = i;
+            break;
+        }
+    }
+    p = ptable[pid] = reinterpret_cast<proc*>(kallocpage());
+    x86_64_pagetable* npt = kalloc_pagetable();
+    // if there were no empty processes
+    if (!pid || !p || !npt) {
+        ptable[pid] = nullptr;
+        ptable_lock.unlock(irqs);
+        kfree(p); kfree(npt);
+        return -1;
+    }    
+    p->init_user(pid, npt);
+    ptable_lock.unlock(irqs);
+    // loop through virtual memory and copy to child
+    for (vmiter it(parent); it.low(); it.next()) {
+        if (!it.user() || !it.present()) continue;
+        if (it.pa() == ktext2pa(console)) {
+            if (vmiter(p, it.va()).map(ktext2pa(console)) < 0) {
+                return -1;
+            }
+            continue;
+        }
+        x86_64_page* pg = kallocpage();
+        if (!pg) { 
+            return -1;
+        }
+        memcpy(pg, (void*) it.ka(), PAGESIZE);
+        if (vmiter(p, it.va()).map(ka2pa(pg), it.perm()) < 0) {
+            return -1;
+        }
+    }
+    memcpy(p->regs_, regs, sizeof(regstate));
+    p->regs_->reg_rax = 0;
+    // put the proc on the runq
+    int cpu = pid % ncpu;
+    cpus[cpu].runq_lock_.lock_noirq();
+    cpus[cpu].enqueue(p);
+    cpus[cpu].runq_lock_.unlock_noirq();
+    return pid;
+}
+
 
 // proc::syscall(regs)
 //    System call handler.
@@ -198,9 +250,9 @@ uintptr_t proc::syscall(regstate* regs) {
         return 0;
     }
 
-    case SYSCALL_FORK:
-        // Your code here
-        return -1;
+    case SYSCALL_FORK: {
+        return fork(this, regs);
+    }
 
     case SYSCALL_READ: {
         int fd = regs->reg_rdi;
