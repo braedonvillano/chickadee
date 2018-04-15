@@ -6,6 +6,8 @@ extern uint8_t end[];
 uint8_t* heap_top;
 uint8_t* stack_bottom;
 
+int please = 0;
+
 void process_main(void) {
     sys_kdisplay(KDISPLAY_MEMVIEWER);
     // Process 1 never allocates; it alternates between forking children
@@ -35,16 +37,16 @@ void process_main(void) {
 
     // Allocate heap pages until (1) hit the stack (out of address space)
     // or (2) allocation fails (out of physical memory).
-    int pagealloc = 0;
-    int sysfork = 0;
-    int sysexit = 0;
-    int count = 0;
+
     while (1) {
         int x = rand(0, 8 * ALLOC_SLOWDOWN - 1);
         if (x < 8 * p && heap_top != stack_bottom) {
             if (sys_page_alloc(heap_top) >= 0) {
                 *heap_top = p;      // check we have write access to new page
                 heap_top += PAGESIZE;
+            } else {
+                printf("i failed the allocate\n");
+
             }
         } else if (x == 8 * p) {
             if (sys_fork() == 0) {
@@ -57,6 +59,5 @@ void process_main(void) {
             (void) sys_waitpid(0, nullptr, W_NOHANG);
             sys_yield();
         }
-        count++;
     }
 }

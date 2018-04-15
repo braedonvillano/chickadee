@@ -297,12 +297,12 @@ inline T read_unaligned_pa(uint64_t pa) {
 // kallocpage
 //    Allocate and return a page. Returns `nullptr` on failure.
 //    Returns a high canonical address.
-x86_64_page* kallocpage() __attribute__((malloc));
+x86_64_page* kallocpage(int flag = 0) __attribute__((malloc));
 
 // kalloc(sz)
 //    Allocate and return a pointer to at least `sz` contiguous bytes
 //    of memory. Returns `nullptr` if `sz == 0` or on failure.
-void* kalloc(size_t sz) __attribute__((malloc));
+void* kalloc(size_t sz, int flag = 0) __attribute__((malloc));
 
 // kfree(ptr)
 //    Free a pointer previously returned by `kalloc`, `kallocpage`, or
