@@ -93,6 +93,8 @@ void init_kalloc() {
 // kalloc(sz)
 //    Allocate and return a pointer to at least `sz` contiguous bytes
 //    of memory. Returns `nullptr` if `sz == 0` or on failure.
+int sample = 0;
+int click = 0;
 void* kalloc(size_t sz, int flag) {    
     int req_ord = PAGE_ORD(sz) > MIN_ORD ? PAGE_ORD(sz) : MIN_ORD;
     int n = req_ord - MIN_ORD;
@@ -101,10 +103,14 @@ void* kalloc(size_t sz, int flag) {
     auto irqs = page_lock.lock();
     // if non-empty list, return block to user
     if (flag > 10) { 
-            log_printf("- in kalloc on iteration: %d\n", flag); 
+            // log_printf("- in kalloc on iteration: %d\n", flag); 
         }
 
     if (!lists[n].empty()) {
+        if (click) {
+            log_printf("something must have exited\n");
+            click = 0;
+        }
         page* p = lists[n].pop_front();
         assert(p->free && p->block);
         int pn = p->pn;
@@ -113,7 +119,7 @@ void* kalloc(size_t sz, int flag) {
             pages[i].free = false;
         }
         if (flag > 10) { 
-            log_printf("-- empty list; the pointer passed is %p on iteration: %d\n", (void*) pa2ka(pn * PAGESIZE), flag); 
+            // log_printf("-- empty list; the pointer passed is %p on iteration: %d\n", (void*) pa2ka(pn * PAGESIZE), flag); 
         }
         page_lock.unlock(irqs);
         return (void*) pa2ka(pn * PAGESIZE);
@@ -128,6 +134,10 @@ void* kalloc(size_t sz, int flag) {
     }
     // return null if no memory to alloc
     if (!block) {
+        if (sample % 5 == 0) print_struct();
+        log_printf("out of memory\n");
+        click = 1;
+        sample++;
         page_lock.unlock(irqs);
         return nullptr; 
     } 

@@ -44,9 +44,6 @@ void process_main(void) {
             if (sys_page_alloc(heap_top) >= 0) {
                 *heap_top = p;      // check we have write access to new page
                 heap_top += PAGESIZE;
-            } else {
-                printf("i failed the allocate\n");
-
             }
         } else if (x == 8 * p) {
             if (sys_fork() == 0) {
