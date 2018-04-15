@@ -151,7 +151,7 @@ void proc::exception(regstate* regs) {
     }
 
     case INT_PAGEFAULT: {
-        // Analyze faulting address and access type.
+       // Analyze faulting address and access type.
         uintptr_t addr = rcr2();
         const char* operation = regs->reg_err & PFERR_WRITE
                 ? "write" : "read";
