@@ -20,7 +20,7 @@ void print_struct_info();
 page pages[600];
 struct list<page, &page::link_> lists[10];
 
-x86_64_page* kallocpage(int flag) {
+x86_64_page* kallocpage() {
     // auto irqs = page_lock.lock();
 
     // x86_64_page* p = nullptr;
@@ -46,7 +46,7 @@ x86_64_page* kallocpage(int flag) {
     // void* ptr = kalloc(PAGESIZE);
     // kfree(ptr);
 
-    return reinterpret_cast<x86_64_page*>(kalloc(PAGESIZE, flag));
+    return reinterpret_cast<x86_64_page*>(kalloc(PAGESIZE));
 }
 
 // init_kalloc
@@ -93,17 +93,12 @@ void init_kalloc() {
 // kalloc(sz)
 //    Allocate and return a pointer to at least `sz` contiguous bytes
 //    of memory. Returns `nullptr` if `sz == 0` or on failure.
-void* kalloc(size_t sz, int flag) {    
+void* kalloc(size_t sz) {    
     int req_ord = PAGE_ORD(sz) > MIN_ORD ? PAGE_ORD(sz) : MIN_ORD;
     int n = req_ord - MIN_ORD;
     if (req_ord > MAX_ORD || sz == 0) return nullptr;
-
     auto irqs = page_lock.lock();
     // if non-empty list, return block to user
-    if (flag > 10) { 
-            log_printf("- in kalloc on iteration: %d\n", flag); 
-        }
-
     if (!lists[n].empty()) {
         page* p = lists[n].pop_front();
         assert(p->free && p->block);
@@ -111,9 +106,6 @@ void* kalloc(size_t sz, int flag) {
         int pgs = 1 << n;
         for (int i = pn; i < pn + pgs; i++) {
             pages[i].free = false;
-        }
-        if (flag > 10) { 
-            log_printf("-- empty list; the pointer passed is %p on iteration: %d\n", (void*) pa2ka(pn * PAGESIZE), flag); 
         }
         page_lock.unlock(irqs);
         return (void*) pa2ka(pn * PAGESIZE);

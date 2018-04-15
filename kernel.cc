@@ -186,74 +186,46 @@ void proc::exception(regstate* regs) {
     assert((regs->reg_cs & 3) == 0 || this->state_ == proc::runnable);
 }
 
-// must be called with ptable_lock held
-void print_used_pids() {
-    log_printf("the following pids are taken:");
-    // go through ptable to find open proc
-    for (pid_t i = 1; i < NPROC; i++) {
-        if (ptable[i]) {
-            log_printf(" %d", ptable[i]->pid_);
-        }
-    }
-    log_printf("\n");
-}
 
 // syscall helper functions below
 //    Fork helper function to make process children
 //    Exit helper function that essentially clears processes
 //    Canary check function ensures structs arent corrupted
-int count = 0;
+pid_t sys_waitpid(pid_t pid, int* stat = nullptr, int options = 0) {
+    // if the pid is zero then we wait for any proc to exit
+    // if the pid is non-zero we wait for that pid specifically
+    // should this be done through constant kernel polling?
+    return 0;
+}
 
 int fork(proc* parent, regstate* regs) {
     auto irqs = ptable_lock.lock();
     proc* p = nullptr;
-    pid_t pid = -1;
-
-    // int flag = 0;
-    log_printf("parent: %d about to fork -> ", parent->pid_);
-    print_used_pids();
-    // log_printf("the following pids are taken:");
+    pid_t pid = 0;
     // go through ptable to find open proc
     for (pid_t i = 1; i < NPROC; i++) {
         if (!ptable[i]) {
             pid = i;
             break;
-        } 
-        // else {
-        //     log_printf(" %d", ptable[i]->pid_);
-        // }
+        }
     }
-    // log_printf("\n");
-    // if (count > 10) { flag = count }
-    p = ptable[pid] = reinterpret_cast<proc*>(kallocpage(count));
+    p = ptable[pid] = reinterpret_cast<proc*>(kallocpage());
     x86_64_pagetable* npt = kalloc_pagetable();
-    // if (!p && count > 10) log_printf("penis\n");
-
     // if there were no empty processes
     if (pid == -1 || !p || !npt) {
-        if (count > 10) {
-            log_printf("--- failed; pid: %d, p: %p, npt: %p, count: %d\n", pid, p, npt, count);
-        }
-        count++;
-
         ptable[pid] = nullptr;
-        assert(!ptable[pid]);
         ptable_lock.unlock(irqs);
         kfree(p); kfree(npt);
         return -1;
     }    
     p->init_user(pid, npt);
-    // ptable_lock.unlock(irqs);
+    ptable_lock.unlock(irqs);
 
     // loop through virtual memory and copy to child
     for (vmiter it(parent); it.low(); it.next()) {
         if (!it.user() || !it.present()) continue;
         if (it.pa() == ktext2pa(console)) {
             if (vmiter(p, it.va()).map(ktext2pa(console)) < 0) {
-                count++;
-                // log_printf("i just failed 2\n");
-                ptable[pid] = nullptr;
-                ptable_lock.unlock(irqs);
                 exit(p, 0); kfree(p); kfree(npt);
                 return -1;
             }
@@ -261,24 +233,17 @@ int fork(proc* parent, regstate* regs) {
         }
         x86_64_page* pg = kallocpage();
         if (!pg) {
-            count++;
-            // log_printf("i just failed 3\n");
-            ptable[pid] = nullptr;
-            ptable_lock.unlock(irqs);
             exit(p, 0); kfree(p); kfree(npt); kfree(pg); 
             return -1;
         }
         memcpy(pg, (void*) it.ka(), PAGESIZE);
         if (vmiter(p, it.va()).map(ka2pa(pg), it.perm()) < 0) {
-            count++;
-            // log_printf("i just failed 4\n");
-            ptable[pid] = nullptr;
-            ptable_lock.unlock(irqs);
             exit(p, 0); kfree(p); kfree(npt); kfree(pg); 
             return -1;
         }
     }
     memcpy(p->regs_, regs, sizeof(regstate));
+    p->regs_->reg_rax = 0;
     // reparent the new process
     auto irqsp = process_hierarchy_lock.lock();
     p->ppid_ = parent->pid_;
@@ -291,28 +256,20 @@ int fork(proc* parent, regstate* regs) {
     cpus[cpu].runq_lock_.lock_noirq();
     cpus[cpu].enqueue(p);
     cpus[cpu].runq_lock_.unlock_noirq();
-    p->regs_->reg_rax = 0;
     canary_check(parent);
-
-    log_printf("%d fork success -> ", pid);
-    print_used_pids();
-    count = 0;
-    ptable_lock.unlock(irqs);
 
     return pid;
 }
 
 void exit(proc* p, int flag) {
     auto irqs = ptable_lock.lock();
-    log_printf("exiting: %d -> ", p->pid_);
     pid_t pid = p->pid_;
     ptable[pid] = nullptr;
-    print_used_pids();
     p->state_ = proc::exited;
     proc* init_p = ptable[INIT_PID];
     assert(!ptable[pid]);
     ptable_lock.unlock(irqs);
-
+    // reparent the children of the exited process
     auto irqsp = process_hierarchy_lock.lock();
     if (flag) {
         p->child_links_.erase();
@@ -326,7 +283,6 @@ void exit(proc* p, int flag) {
         } 
     }
     process_hierarchy_lock.unlock(irqsp);
-
     // free the process's memory 
     for (vmiter it(p); it.low(); it.next()) {
         if (it.user() && it.present() && it.pa() != ktext2pa(console)) { 
