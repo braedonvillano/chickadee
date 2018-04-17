@@ -5,8 +5,8 @@ extern uint8_t end[];
 
 uint8_t* heap_top;
 uint8_t* stack_bottom;
-
-int please = 0;
+// int num = 12345;
+// int* status = &num;
 
 void process_main(void) {
     sys_kdisplay(KDISPLAY_MEMVIEWER);

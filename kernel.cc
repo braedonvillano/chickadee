@@ -142,8 +142,9 @@ void proc::exception(regstate* regs) {
             kdisplay_ontick();
         }
         lapicstate::get().ack();
-        this->regs_ = regs;
-        this->yield_noreturn();
+        // this->regs_ = regs;
+        // this->yield_noreturn();
+        this->yield();
         break;                  /* will not be reached */
     }
 
@@ -178,24 +179,63 @@ void proc::exception(regstate* regs) {
             panic("Unexpected exception %d!\n", regs->reg_intno);
         }
         break;                  /* will not be reached */
-
-    }
+}
 
     // Return to the current process.
     // If exception arrived in user mode, the process must be runnable.
     assert((regs->reg_cs & 3) == 0 || this->state_ == proc::runnable);
 }
 
-
 // syscall helper functions below
 //    Fork helper function to make process children
 //    Exit helper function that essentially clears processes
 //    Canary check function ensures structs arent corrupted
-pid_t sys_waitpid(pid_t pid, int* stat = nullptr, int options = 0) {
-    // if the pid is zero then we wait for any proc to exit
-    // if the pid is non-zero we wait for that pid specifically
-    // should this be done through constant kernel polling?
-    return 0;
+
+wpret wait_pid(pid_t pid, proc* parent, int opts = 0) {
+    assert(parent);
+    wpret wpr;
+    // initialize return before sending to parent
+    wpr.stat = 0;
+    bool wait = false;
+    while (1) {
+        auto irqs = ptable_lock.lock();
+        proc* p = parent->child_list.front();
+        if (!p && !pid) {
+            wpr.pid_c = E_CHILD;
+            ptable_lock.unlock(irqs);
+            return wpr;
+        }
+        // cycle through the list to find a child
+        while (p) {
+            if (!pid && p->state_ == proc::wexited) {
+                ptable[pid] = nullptr;
+                ptable_lock.unlock(irqs);
+                wpr.stat = p->exit_status_;
+                wpr.pid_c = pid;
+                p->state_ = proc::exited;
+                kfree(p->pagetable_); kfree(p);
+                return wpr;
+            } else if (p->pid_ == pid) {
+                if (p->state_ == proc::wexited) {
+                    ptable[pid] = nullptr;
+                    ptable_lock.unlock(irqs);
+                    wpr.stat = p->exit_status_;
+                    wpr.pid_c = pid;
+                    p->state_ = proc::exited;
+                    kfree(p->pagetable_); kfree(p);
+                    return wpr;
+                }
+                wait = true;
+                break;
+            }
+        }
+        ptable_lock.unlock(irqs);
+        if (!pid) { wpr.pid_c = E_CHILD; return wpr; }
+        if (!wait) { wpr.pid_c = E_CHILD; return wpr; }
+        if (opts) { wpr.pid_c = E_AGAIN; return wpr; }
+        parent->yield();
+    }
+    return wpr;
 }
 
 int fork(proc* parent, regstate* regs) {
@@ -220,7 +260,6 @@ int fork(proc* parent, regstate* regs) {
     }    
     p->init_user(pid, npt);
     ptable_lock.unlock(irqs);
-
     // loop through virtual memory and copy to child
     for (vmiter it(parent); it.low(); it.next()) {
         if (!it.user() || !it.present()) continue;
@@ -332,8 +371,10 @@ uintptr_t proc::syscall(regstate* regs) {
         return pid_;
 
     case SYSCALL_YIELD:
-        this->yield();
-        return 0;
+        this->regs_ = regs;
+        regs->reg_rax = 0;
+        this->yield_noreturn(); // NB does not return
+        break;
 
     case SYSCALL_PAGE_ALLOC: {
         uintptr_t addr = regs->reg_rdi;
@@ -345,6 +386,16 @@ uintptr_t proc::syscall(regstate* regs) {
             return -1;
         }
         canary_check(this);
+        return 0;
+    }
+
+    case SYSCALL_WAITPID: {
+        pid_t pid = regs->reg_rdi;
+        int opts = regs->reg_rsi;
+        // wpret wpr = wait_pid(pid, this, opts);
+        // log_printf("made it here: %d and %d \n", wpr.pid_c, wpr.stat);
+        int check = 12345;
+        asm("" : : "c" (check));
         return 0;
     }
 
