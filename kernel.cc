@@ -193,11 +193,14 @@ void proc::exception(regstate* regs) {
 
 void a_holy_bond(proc* p) {
     log_printf("children:");
-    proc* p_ = p->child_list.front();
-    while (p_) {
+    for (proc* p_ = p->child_list.front(); p_; p_ = p->child_list.next(p_)) {
         log_printf(" %d", p_->pid_);
     }
-    p_ = p->child_list.next(p_);
+    // proc* p_ = p->child_list.front();
+    // while (p_) {
+    //     log_printf(" %d", p_->pid_);
+    // }
+    // p_ = p->child_list.next(p_);
     log_printf(" \n");
 }
 
@@ -208,9 +211,11 @@ wpret wait_pid(pid_t pid, proc* parent, int opts = 0) {
     wpr.stat = 0;
     bool wait = false;
     while (1) {
-        // log_printf("waitpid -> parent: %d, child: %d\n", parent->pid_, pid);
         auto irqsp = process_hierarchy_lock.lock();
-        // a_holy_bond(parent);
+
+        log_printf("waitpid -> parent: %d, child: %d\n", parent->pid_, pid);
+        a_holy_bond(parent);
+
         proc* p = parent->child_list.front();
         if (!p && !pid) {
             process_hierarchy_lock.unlock(irqsp);
@@ -218,9 +223,12 @@ wpret wait_pid(pid_t pid, proc* parent, int opts = 0) {
             return wpr;
         }
         // cycle through the list to find a child
+        // int cnt = 0;
         while (p) {
+            // log_printf("%d ", cnt);
+            log_printf("the state is %d\n", p->state_);
             if (!pid && p->state_ == proc::wexited) {
-                // log_printf("henlo stinky");
+                log_printf("henlo stinky\n");
                 auto irqs = ptable_lock.lock();
                 ptable[pid] = nullptr;
                 ptable_lock.unlock(irqs);
@@ -248,9 +256,11 @@ wpret wait_pid(pid_t pid, proc* parent, int opts = 0) {
                 break;
             }
             p = parent->child_list.next(p);
+            // cnt++;
         }
         process_hierarchy_lock.unlock(irqsp);
-        if (!pid) { wpr.pid_c = E_CHILD; break; }
+        log_printf("im here bitch\n");
+        if (!pid && opts) { wpr.pid_c = E_CHILD; break; }
         if (!wait) { wpr.pid_c = E_CHILD; break; }
         if (opts) { wpr.pid_c = E_AGAIN; break; }
         parent->yield();
@@ -260,6 +270,9 @@ wpret wait_pid(pid_t pid, proc* parent, int opts = 0) {
 
 int fork(proc* parent, regstate* regs) {
     auto irqs = ptable_lock.lock();
+
+    log_printf("fork -> parent: %d\n", parent->pid_);
+
     proc* p = nullptr;
     pid_t pid = 0;
     // go through ptable to find open proc
@@ -309,6 +322,10 @@ int fork(proc* parent, regstate* regs) {
     p->child_links_.reset();
     parent->child_list.push_front(p);
     p->child_list.reset();
+
+    log_printf("fork success -> child: %d\n", p->pid_);
+    a_holy_bond(parent);
+
     process_hierarchy_lock.unlock(irqsp);
     // put the proc on the runq
     int cpu = pid % ncpu;
@@ -322,6 +339,9 @@ int fork(proc* parent, regstate* regs) {
 
 void exit(proc* p, int flag) {
     auto irqs = ptable_lock.lock();
+
+    log_printf("exit -> process: %d\n", p->pid_);
+
     pid_t pid = p->pid_;
     ptable[pid] = nullptr;
     p->state_ = proc::exited;
