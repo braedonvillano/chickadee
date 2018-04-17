@@ -191,6 +191,16 @@ void proc::exception(regstate* regs) {
 //    Exit helper function that essentially clears processes
 //    Canary check function ensures structs arent corrupted
 
+void a_holy_bond(proc* p) {
+    log_printf("children:");
+    proc* p_ = p->child_list.front();
+    while (p_) {
+        log_printf(" %d", p_->pid_);
+    }
+    p_ = p->child_list.next(p_);
+    log_printf(" \n");
+}
+
 wpret wait_pid(pid_t pid, proc* parent, int opts = 0) {
     assert(parent);
     wpret wpr;
@@ -198,41 +208,51 @@ wpret wait_pid(pid_t pid, proc* parent, int opts = 0) {
     wpr.stat = 0;
     bool wait = false;
     while (1) {
-        auto irqs = ptable_lock.lock();
+        // log_printf("waitpid -> parent: %d, child: %d\n", parent->pid_, pid);
+        auto irqsp = process_hierarchy_lock.lock();
+        // a_holy_bond(parent);
         proc* p = parent->child_list.front();
         if (!p && !pid) {
+            process_hierarchy_lock.unlock(irqsp);
             wpr.pid_c = E_CHILD;
-            ptable_lock.unlock(irqs);
             return wpr;
         }
         // cycle through the list to find a child
         while (p) {
             if (!pid && p->state_ == proc::wexited) {
+                // log_printf("henlo stinky");
+                auto irqs = ptable_lock.lock();
                 ptable[pid] = nullptr;
                 ptable_lock.unlock(irqs);
+                process_hierarchy_lock.unlock(irqsp);
                 wpr.stat = p->exit_status_;
                 wpr.pid_c = pid;
                 p->state_ = proc::exited;
+                ptable_lock.unlock(irqs);
                 kfree(p->pagetable_); kfree(p);
                 return wpr;
             } else if (p->pid_ == pid) {
                 if (p->state_ == proc::wexited) {
+                    auto irqs = ptable_lock.lock();
                     ptable[pid] = nullptr;
                     ptable_lock.unlock(irqs);
+                    process_hierarchy_lock.unlock(irqsp);
                     wpr.stat = p->exit_status_;
                     wpr.pid_c = pid;
                     p->state_ = proc::exited;
+                    ptable_lock.unlock(irqs);
                     kfree(p->pagetable_); kfree(p);
                     return wpr;
                 }
                 wait = true;
                 break;
             }
+            p = parent->child_list.next(p);
         }
-        ptable_lock.unlock(irqs);
-        if (!pid) { wpr.pid_c = E_CHILD; return wpr; }
-        if (!wait) { wpr.pid_c = E_CHILD; return wpr; }
-        if (opts) { wpr.pid_c = E_AGAIN; return wpr; }
+        process_hierarchy_lock.unlock(irqsp);
+        if (!pid) { wpr.pid_c = E_CHILD; break; }
+        if (!wait) { wpr.pid_c = E_CHILD; break; }
+        if (opts) { wpr.pid_c = E_AGAIN; break; }
         parent->yield();
     }
     return wpr;
@@ -392,11 +412,10 @@ uintptr_t proc::syscall(regstate* regs) {
     case SYSCALL_WAITPID: {
         pid_t pid = regs->reg_rdi;
         int opts = regs->reg_rsi;
-        // wpret wpr = wait_pid(pid, this, opts);
+        wpret wpr = wait_pid(pid, this, opts);
         // log_printf("made it here: %d and %d \n", wpr.pid_c, wpr.stat);
-        int check = 12345;
-        asm("" : : "c" (check));
-        return 0;
+        asm("" : : "c" (wpr.stat));
+        return wpr.pid_c;
     }
 
     case SYSCALL_PAUSE: {
