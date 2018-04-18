@@ -210,6 +210,7 @@ wpret wait_pid(pid_t pid, proc* parent, int opts = 0) {
     // initialize return before sending to parent
     wpr.stat = 0;
     bool wait = false;
+    bool again = false;
     while (1) {
         auto irqsp = process_hierarchy_lock.lock();
 
@@ -217,28 +218,31 @@ wpret wait_pid(pid_t pid, proc* parent, int opts = 0) {
         a_holy_bond(parent);
 
         proc* p = parent->child_list.front();
-        if (!p && !pid) {
+        // if p is null that means that there are no children
+        // which means that whether pid is non-zero or not, E_CHILD should be returned
+        if (!p) {
             process_hierarchy_lock.unlock(irqsp);
             wpr.pid_c = E_CHILD;
             return wpr;
         }
         // cycle through the list to find a child
-        // int cnt = 0;
         while (p) {
-            // log_printf("%d ", cnt);
             log_printf("the state is %d\n", p->state_);
-            if (!pid && p->state_ == proc::wexited) {
-                log_printf("henlo stinky\n");
-                auto irqs = ptable_lock.lock();
-                ptable[pid] = nullptr;
-                ptable_lock.unlock(irqs);
-                process_hierarchy_lock.unlock(irqsp);
-                wpr.stat = p->exit_status_;
-                wpr.pid_c = pid;
-                p->state_ = proc::exited;
-                ptable_lock.unlock(irqs);
-                kfree(p->pagetable_); kfree(p);
-                return wpr;
+            if (!pid) {
+                if (p->state_ == proc::wexited) {
+                    log_printf("henlo stinky\n");
+                    auto irqs = ptable_lock.lock();
+                    ptable[pid] = nullptr;
+                    ptable_lock.unlock(irqs);
+                    process_hierarchy_lock.unlock(irqsp);
+                    wpr.stat = p->exit_status_;
+                    wpr.pid_c = pid;
+                    p->state_ = proc::exited;
+                    ptable_lock.unlock(irqs);
+                    kfree(p->pagetable_); kfree(p);
+                    return wpr;
+                }
+                wait = true;
             } else if (p->pid_ == pid) {
                 if (p->state_ == proc::wexited) {
                     auto irqs = ptable_lock.lock();
@@ -256,11 +260,9 @@ wpret wait_pid(pid_t pid, proc* parent, int opts = 0) {
                 break;
             }
             p = parent->child_list.next(p);
-            // cnt++;
         }
         process_hierarchy_lock.unlock(irqsp);
         log_printf("im here bitch\n");
-        if (!pid && opts) { wpr.pid_c = E_CHILD; break; }
         if (!wait) { wpr.pid_c = E_CHILD; break; }
         if (opts) { wpr.pid_c = E_AGAIN; break; }
         parent->yield();
