@@ -201,6 +201,21 @@ void a_holy_bond(proc* p) {
     log_printf(" \n");
 }
 
+void reparent_child(proc* p, proc* init_p) {
+    auto irqsp = process_hierarchy_lock.lock();
+    p->child_links_.erase();
+    proc* p_ = p->child_list.front();
+    while (p_) {
+        auto next = p->child_list.next(p_);
+        p_->ppid_ = INIT_PID;
+        p_->child_links_.erase();
+        init_p->child_list.push_front(p_);
+        p_ = next;
+    } 
+    process_hierarchy_lock.unlock(irqsp);
+
+}
+
 wpret wait_pid(pid_t pid, proc* parent, int opts = 0) {
     assert(parent);
     wpret wpr;
@@ -219,18 +234,20 @@ wpret wait_pid(pid_t pid, proc* parent, int opts = 0) {
         }
         // cycle through the list to find a child
         while (p) {
-            if (!pid && p->state_ == proc::wexited) {
-                // log_printf("henlo stinky");
-                auto irqs = ptable_lock.lock();
-                ptable[pid] = nullptr;
-                ptable_lock.unlock(irqs);
-                process_hierarchy_lock.unlock(irqsp);
-                wpr.stat = p->exit_status_;
-                wpr.pid_c = pid;
-                p->state_ = proc::exited;
-                ptable_lock.unlock(irqs);
-                kfree(p->pagetable_); kfree(p);
-                return wpr;
+            if (!pid) {
+                if (p->state_ == proc::wexited) {
+                    auto irqs = ptable_lock.lock();
+                    ptable[pid] = nullptr;
+                    ptable_lock.unlock(irqs);
+                    process_hierarchy_lock.unlock(irqsp);
+                    wpr.stat = p->exit_status_;
+                    wpr.pid_c = pid;
+                    p->state_ = proc::exited;
+                    ptable_lock.unlock(irqs);
+                    kfree(p->pagetable_); kfree(p);
+                    return wpr;
+                }
+                wait = true;
             } else if (p->pid_ == pid) {
                 if (p->state_ == proc::wexited) {
                     auto irqs = ptable_lock.lock();
@@ -250,7 +267,6 @@ wpret wait_pid(pid_t pid, proc* parent, int opts = 0) {
             p = parent->child_list.next(p);
         }
         process_hierarchy_lock.unlock(irqsp);
-        if (!pid) { wpr.pid_c = E_CHILD; break; }
         if (!wait) { wpr.pid_c = E_CHILD; break; }
         if (opts) { wpr.pid_c = E_AGAIN; break; }
         parent->yield();
@@ -328,20 +344,9 @@ void exit(proc* p, int flag) {
     proc* init_p = ptable[INIT_PID];
     assert(!ptable[pid]);
     ptable_lock.unlock(irqs);
+
+        
     // reparent the children of the exited process
-    auto irqsp = process_hierarchy_lock.lock();
-    if (flag) {
-        p->child_links_.erase();
-        proc* p_ = p->child_list.front();
-        while (p_) {
-            auto next = p->child_list.next(p_);
-            p_->ppid_ = INIT_PID;
-            p_->child_links_.erase();
-            init_p->child_list.push_front(p_);
-            p_ = next;
-        } 
-    }
-    process_hierarchy_lock.unlock(irqsp);
     // free the process's memory 
     for (vmiter it(p); it.low(); it.next()) {
         if (it.user() && it.present() && it.pa() != ktext2pa(console)) { 
@@ -351,6 +356,10 @@ void exit(proc* p, int flag) {
     // free the process's page tabeles
     for (ptiter it(p); it.low(); it.next()) {
         kfree((void*) pa2ka(it.ptp_pa()));
+    }
+    
+    if (flag) {
+        reparent_child(p, init_p);
     }
 }
 
