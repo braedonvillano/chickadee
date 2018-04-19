@@ -93,18 +93,6 @@ void cpustate::schedule(proc* yielding_from) {
 
     while (1) {
         // try to run `current`
-
-        // if (current_ && nschedule_ % 1000 == 0) {
-        //     if (current_->state_ == proc::runnable ) {
-        //         // log_printf("%d: the current_ state is runnable in %s at %p\n",
-        //         //     current_->pid_,
-        //         //     current_->yields_? "yield" : "regs",
-        //         //     current_->yields_? current_->yields_->reg_rip : 0);
-        //     } else {
-        //         log_printf("the current_ state is non-runnable\n");
-        //     }
-        // }
-
         if (current_
             && current_->state_ == proc::runnable
             && current_ != yielding_from) {
@@ -116,8 +104,9 @@ void cpustate::schedule(proc* yielding_from) {
         runq_lock_.lock_noirq();
         if (proc* p = current_) {
             if (current_->state_ == proc::exited) {
-                kfree(current_->pagetable_);
-                kfree(current_);
+                // kfree(current_->pagetable_);
+                // kfree(current_);
+                current_->state_ = proc::wexited;
                 p = nullptr;
             }
             current_ = yielding_from = nullptr;

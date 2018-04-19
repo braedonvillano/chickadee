@@ -98,18 +98,6 @@ void* kalloc(size_t sz) {
     int n = req_ord - MIN_ORD;
     if (req_ord > MAX_ORD || sz == 0) return nullptr;
     auto irqs = page_lock.lock();
-    // if non-empty list, return block to user
-    if (!lists[n].empty()) {
-        page* p = lists[n].pop_front();
-        assert(p->free && p->block);
-        int pn = p->pn;
-        int pgs = 1 << n;
-        for (int i = pn; i < pn + pgs; i++) {
-            pages[i].free = false;
-        }
-        page_lock.unlock(irqs);
-        return (void*) pa2ka(pn * PAGESIZE);
-    }
     // find the next non-empty list
     page* block = nullptr;
     for (int j = req_ord - MIN_ORD; j < ARR_SZ; j++) {
@@ -155,7 +143,6 @@ void* kalloc(size_t sz) {
 void kfree(void* ptr) {
     if (!ptr) return;
     auto irqs = page_lock.lock();
-
     // uintptr_t addr = (uintptr_t) ptr;
     uintptr_t addr = ka2pa(ptr);
     int pgn = addr / PAGESIZE;
