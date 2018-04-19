@@ -209,19 +209,31 @@ void print_used_pids() {
     log_printf("\n");
 }
 
+void print_runq__(proc* forked, proc* parent) {
+    // log_printf("forked pid: %d, current: %d, and runq_:", forked->pid_, parent->pid_);
+    int find = 0;
+    for (proc* p = this_cpu()->runq_.front(); p; p = this_cpu()->runq_.next(p)) {
+        if (p->pid_ == forked->pid_) {
+            find = p->pid_;
+        }
+        // log_printf(" %d", p->pid_);
+    }
+    assert(find);
+    log_printf("passed test\n");
+}
+
 // syscall helper functions below
 //    Fork helper function to make process children
 //    Exit helper function that essentially clears processes
 //    Canary check function ensures structs arent corrupted
 int count = 0;
-
 int fork(proc* parent, regstate* regs) {
     auto irqs = ptable_lock.lock();
     proc* p = nullptr;
     pid_t pid = -1;
 
     // int flag = 0;
-    // log_printf("parent: %d about to fork -> ", parent->pid_);
+    // log_printf("parent: %d about to fork \n ", parent->pid_);
     // print_used_pids();
     // log_printf("the following pids are taken:");
     // go through ptable to find open proc
@@ -293,6 +305,7 @@ int fork(proc* parent, regstate* regs) {
         }
     }
     memcpy(p->regs_, regs, sizeof(regstate));
+    p->regs_->reg_rax = 0;
     // reparent the new process
     auto irqsp = process_hierarchy_lock.lock();
     p->ppid_ = parent->pid_;
@@ -303,14 +316,14 @@ int fork(proc* parent, regstate* regs) {
     // put the proc on the runq
     int cpu = pid % ncpu;
     cpus[cpu].runq_lock_.lock_noirq();
+    p->runq_links_.reset();
     cpus[cpu].enqueue(p);
+    // print_runq__(p, parent);
     cpus[cpu].runq_lock_.unlock_noirq();
-    p->regs_->reg_rax = 0;
     canary_check(parent);
 
-    // log_printf("%d fork success -> ", pid);
+    // log_printf("%d fork success \n", pid);
     // print_used_pids();
-    count = 0;
     ptable_lock.unlock(irqs);
 
     return pid;
@@ -318,7 +331,7 @@ int fork(proc* parent, regstate* regs) {
 
 void exit(proc* p, int flag) {
     auto irqs = ptable_lock.lock();
-    log_printf("exiting: %d \n ", p->pid_);
+    // log_printf("exiting: %d \n ", p->pid_);
     pid_t pid = p->pid_;
     ptable[pid] = nullptr;
     // print_used_pids();
@@ -357,11 +370,11 @@ int page_alloc(proc* p, uintptr_t addr) {
     // int flag = 0;
     auto irqs = ptable_lock.lock();
     // if (proc_check()) flag = 1;
-    log_printf("count: %d -> ", count);
+    // log_printf("count: %d -> ", count);
     ptable_lock.unlock(irqs);
     if (addr >= VA_LOWMAX || addr & PAGEOFFMASK) {
         // if (flag) {
-        log_printf("user requested an invalid page\n");
+        // log_printf("user requested an invalid page\n");
         // }
         return -1;
     }
@@ -369,9 +382,9 @@ int page_alloc(proc* p, uintptr_t addr) {
     if (!pg || vmiter(p, addr).map(ka2pa(pg)) < 0) {
         // if (flag) {
         if (!pg) { 
-            log_printf("kallocpage failed\n"); 
+            // log_printf("kallocpage failed\n"); 
         } else {
-            log_printf("mapping failed\n");
+            // log_printf("mapping failed\n");
         }
         // }
         return -1;

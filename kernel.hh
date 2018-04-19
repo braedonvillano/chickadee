@@ -133,6 +133,7 @@ struct __attribute__((aligned(4096))) cpustate {
     void exception(regstate* reg);
 
     void enqueue(proc* p);
+    void print_runq_(proc* exited);
     void schedule(proc* yielding_from) __attribute__((noreturn));
 
     void enable_irq(int irqno);

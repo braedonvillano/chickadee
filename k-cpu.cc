@@ -66,7 +66,20 @@ void cpustate::enqueue(proc* p) {
     if (current_ != p && !p->runq_links_.is_linked()) {
         assert(p->resumable() || p->state_ != proc::runnable);
         runq_.push_back(p);
+    } else if (current_ == p) {
+        log_printf("opsie: current == p");
+    } else {
+        log_printf("opsie: runq_links_.is_linked() is false!");
     }
+}
+
+
+void cpustate::print_runq_(proc* exited) {
+    log_printf("exited pid: %d, current: %d, and runq_:", exited->pid_, current_->pid_);
+    for (proc* p = runq_.front(); p; p = runq_.next(p)) {
+        log_printf(" %d", p->pid_);
+    }
+    log_printf("\n");
 }
 
 
@@ -116,6 +129,7 @@ void cpustate::schedule(proc* yielding_from) {
         runq_lock_.lock_noirq();
         if (proc* p = current_) {
             if (current_->state_ == proc::exited) {
+                // print_runq_(current_);
                 kfree(current_->pagetable_);
                 kfree(current_);
                 p = nullptr;

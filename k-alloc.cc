@@ -107,10 +107,10 @@ void* kalloc(size_t sz, int flag) {
         }
 
     if (!lists[n].empty()) {
-        if (click) {
-            log_printf("something must have exited\n");
-            click = 0;
-        }
+        // if (click) {
+        //     log_printf("something must have exited\n");
+        //     click = 0;
+        // }
         page* p = lists[n].pop_front();
         assert(p->free && p->block);
         int pn = p->pn;
@@ -134,8 +134,8 @@ void* kalloc(size_t sz, int flag) {
     }
     // return null if no memory to alloc
     if (!block) {
-        if (sample % 5 == 0) print_struct();
-        log_printf("out of memory\n");
+        // if (sample % 5 == 0) print_struct();
+        // log_printf("out of memory\n");
         click = 1;
         sample++;
         page_lock.unlock(irqs);
