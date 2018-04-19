@@ -44,7 +44,7 @@ struct __attribute__((aligned(4096))) proc {
 #endif
 
     enum state_t {
-        blank = 0, runnable, blocked, broken, exited, wexited
+        blank = 0, runnable, blocked, broken, exited, wexited, dead
     };
     state_t state_;                    // process state
     x86_64_pagetable* pagetable_;      // process's page table

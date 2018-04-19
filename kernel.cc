@@ -209,7 +209,6 @@ void reap_child(proc* p, pid_t pid, wpret* wpr) {
     p->state_ = proc::exited;
     ptable_lock.unlock(irqs);
     kfree(p->pagetable_); kfree(p);
-    // return wpr;
 }
 
 wpret wait_pid(pid_t pid, proc* parent, int opts = 0) {
@@ -218,7 +217,7 @@ wpret wait_pid(pid_t pid, proc* parent, int opts = 0) {
     // initialize return before sending to parent
     wpr.stat = 0;
     bool wait = false;
-    bool again = false;
+    int again = 0;
     while (1) {
         auto irqsp = process_hierarchy_lock.lock();
         // check if the child list is empty
@@ -232,12 +231,13 @@ wpret wait_pid(pid_t pid, proc* parent, int opts = 0) {
         while (p) {
             if (!pid) {
                 if (p->state_ == proc::wexited) {
+                    // log_printf("any proc -> pid: %d\n", p->pid_);
                     auto irqs = ptable_lock.lock();
                     p->child_links_.erase();
                     ptable[p->pid_] = nullptr;
                     wpr.stat = p->exit_status_;
                     wpr.pid_c = p->pid_;
-                    p->state_ = proc::exited;
+                    p->state_ = proc::dead;
                     ptable_lock.unlock(irqs);
                     process_hierarchy_lock.unlock(irqsp);
                     kfree(p->pagetable_); kfree(p);
@@ -245,13 +245,17 @@ wpret wait_pid(pid_t pid, proc* parent, int opts = 0) {
                 }
                 wait = true;
             } else if (p->pid_ == pid) {
+                if (p->pid_ == 6 && again % 5000) {
+                    log_printf("specfic proc -> pid: %d\n", p->pid_);
+                    a_holy_bond(parent);
+                }
                 if (p->state_ == proc::wexited) {
                     auto irqs = ptable_lock.lock();
                     p->child_links_.erase();
                     ptable[p->pid_] = nullptr;
                     wpr.stat = p->exit_status_;
                     wpr.pid_c = p->pid_;
-                    p->state_ = proc::exited;
+                    p->state_ = proc::dead;
                     ptable_lock.unlock(irqs);
                     process_hierarchy_lock.unlock(irqsp);
                     kfree(p->pagetable_); kfree(p);
@@ -263,10 +267,10 @@ wpret wait_pid(pid_t pid, proc* parent, int opts = 0) {
             p = parent->child_list.next(p);
         }
         process_hierarchy_lock.unlock(irqsp);
-        // log_printf("im here bitch\n");
         if (!wait) { wpr.pid_c = E_CHILD; break; }
         if (opts) { wpr.pid_c = E_AGAIN; break; }
         parent->yield();
+        again++;
     }
     return wpr;
 }

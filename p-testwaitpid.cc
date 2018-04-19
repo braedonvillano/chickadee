@@ -9,6 +9,9 @@ static void make_children(pid_t* children) {
         pid_t p = sys_fork();
         if (p == 0) {
             sys_msleep(order[i] * 100);
+            pid_t r = sys_getpid();
+            // if (r == )
+            // console_printf("pid %d is about to exit\n", r);
             sys_exit(order[i]);
         }
         assert_gt(p, 0);
@@ -81,16 +84,25 @@ void process_main() {
     assert_eq(sys_waitpid(0), E_CHILD);
     console_printf("waitpid(0) blocking tests succeed.\n");
 
-
+    int count = 0;
     console_printf("waitpid(pid) blocking tests...\n");
     make_children(children);
+    console_printf("the children are:");
+    for (unsigned int i = 0; i < arraysize(order); i++) {
+        console_printf(" %d", children[i]);
+    }
+    console_printf("\n");
     for (size_t i = 0; i != arraysize(order); ++i) {
         int status = 0;
         pid_t ch = sys_waitpid(children[i], &status);
+        console_printf("iteration %d with pid: %d and status: %d\n", count, children[i], order[i]);
         assert_eq(ch, children[i]);
+        // console_printf("what in the ass is children: %d\n", children[i]);
+
 
         console_printf("%d @%lu: exit status %d\n", ch, i, status);
         assert_eq(order[i], status);
+        count++;
     }
     assert_eq(sys_waitpid(0), E_CHILD);
     console_printf("waitpid(pid) blocking tests succeed.\n");
