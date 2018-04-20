@@ -210,76 +210,46 @@ void print_used_pids() {
 }
 
 void print_runq__(proc* forked, proc* parent) {
-    // log_printf("forked pid: %d, current: %d, and runq_:", forked->pid_, parent->pid_);
     int find = 0;
     for (proc* p = this_cpu()->runq_.front(); p; p = this_cpu()->runq_.next(p)) {
         if (p->pid_ == forked->pid_) {
             find = p->pid_;
         }
-        // log_printf(" %d", p->pid_);
     }
     assert(find);
-    log_printf("passed test\n");
 }
 
 // syscall helper functions below
 //    Fork helper function to make process children
 //    Exit helper function that essentially clears processes
 //    Canary check function ensures structs arent corrupted
-int count = 0;
+
 int fork(proc* parent, regstate* regs) {
     auto irqs = ptable_lock.lock();
     proc* p = nullptr;
-    pid_t pid = -1;
-
-    // int flag = 0;
-    // log_printf("parent: %d about to fork \n ", parent->pid_);
-    // print_used_pids();
-    // log_printf("the following pids are taken:");
-    // go through ptable to find open proc
+    pid_t pid = 0;
     for (pid_t i = 1; i < NPROC; i++) {
         if (!ptable[i]) {
             pid = i;
             break;
         } 
-        // else {
-        //     log_printf(" %d", ptable[i]->pid_);
-        // }
     }
-    // log_printf("\n");
-    // if (count > 10) { flag = count }
-    p = ptable[pid] = reinterpret_cast<proc*>(kallocpage(count));
+    p = ptable[pid] = reinterpret_cast<proc*>(kallocpage());
     x86_64_pagetable* npt = kalloc_pagetable();
-    if (count > 10) {
-        // void* pls =
-    }
-    // if (!p && count > 10) log_printf("penis\n");
-
     // if there were no empty processes
-    if (pid == -1 || !p || !npt) {
-        if (count > 10) {
-            // log_printf("--- failed; pid: %d, p: %p, npt: %p, count: %d\n", pid, p, npt, count);
-        }
-        count++;
-
+    if (!pid || !p || !npt) {
         ptable[pid] = nullptr;
-        assert(!ptable[pid]);
         ptable_lock.unlock(irqs);
         kfree(p); kfree(npt);
         return -1;
     }    
     p->init_user(pid, npt);
-    // ptable_lock.unlock(irqs);
-
+    ptable_lock.unlock(irqs);
     // loop through virtual memory and copy to child
     for (vmiter it(parent); it.low(); it.next()) {
         if (!it.user() || !it.present()) continue;
         if (it.pa() == ktext2pa(console)) {
             if (vmiter(p, it.va()).map(ktext2pa(console)) < 0) {
-                count++;
-                // log_printf("i just failed 2\n");
-                ptable[pid] = nullptr;
-                ptable_lock.unlock(irqs);
                 exit(p, 0); kfree(p); kfree(npt);
                 return -1;
             }
@@ -287,19 +257,11 @@ int fork(proc* parent, regstate* regs) {
         }
         x86_64_page* pg = kallocpage();
         if (!pg) {
-            count++;
-            // log_printf("i just failed 3\n");
-            ptable[pid] = nullptr;
-            ptable_lock.unlock(irqs);
             exit(p, 0); kfree(p); kfree(npt); kfree(pg); 
             return -1;
         }
         memcpy(pg, (void*) it.ka(), PAGESIZE);
         if (vmiter(p, it.va()).map(ka2pa(pg), it.perm()) < 0) {
-            count++;
-            // log_printf("i just failed 4\n");
-            ptable[pid] = nullptr;
-            ptable_lock.unlock(irqs);
             exit(p, 0); kfree(p); kfree(npt); kfree(pg); 
             return -1;
         }
@@ -318,23 +280,16 @@ int fork(proc* parent, regstate* regs) {
     cpus[cpu].runq_lock_.lock_noirq();
     p->runq_links_.reset();
     cpus[cpu].enqueue(p);
-    // print_runq__(p, parent);
     cpus[cpu].runq_lock_.unlock_noirq();
     canary_check(parent);
-
-    // log_printf("%d fork success \n", pid);
-    // print_used_pids();
-    ptable_lock.unlock(irqs);
 
     return pid;
 }
 
 void exit(proc* p, int flag) {
     auto irqs = ptable_lock.lock();
-    // log_printf("exiting: %d \n ", p->pid_);
     pid_t pid = p->pid_;
     ptable[pid] = nullptr;
-    // print_used_pids();
     p->state_ = proc::exited;
     proc* init_p = ptable[INIT_PID];
     assert(!ptable[pid]);
@@ -364,33 +319,6 @@ void exit(proc* p, int flag) {
     for (ptiter it(p); it.low(); it.next()) {
         kfree((void*) pa2ka(it.ptp_pa()));
     }
-}
-
-int page_alloc(proc* p, uintptr_t addr) {
-    // int flag = 0;
-    auto irqs = ptable_lock.lock();
-    // if (proc_check()) flag = 1;
-    // log_printf("count: %d -> ", count);
-    ptable_lock.unlock(irqs);
-    if (addr >= VA_LOWMAX || addr & PAGEOFFMASK) {
-        // if (flag) {
-        // log_printf("user requested an invalid page\n");
-        // }
-        return -1;
-    }
-    x86_64_page* pg = kallocpage();
-    if (!pg || vmiter(p, addr).map(ka2pa(pg)) < 0) {
-        // if (flag) {
-        if (!pg) { 
-            // log_printf("kallocpage failed\n"); 
-        } else {
-            // log_printf("mapping failed\n");
-        }
-        // }
-        return -1;
-    }
-    canary_check(p);
-    return 0;
 }
 
 void canary_check(proc* p) {
@@ -435,15 +363,15 @@ uintptr_t proc::syscall(regstate* regs) {
 
     case SYSCALL_PAGE_ALLOC: {
         uintptr_t addr = regs->reg_rdi;
-        // if (addr >= VA_LOWMAX || addr & PAGEOFFMASK) {
-        //     return -1;
-        // }
-        // x86_64_page* pg = kallocpage();
-        // if (!pg || vmiter(this, addr).map(ka2pa(pg)) < 0) {
-        //     return -1;
-        // }
-        // canary_check(this);
-        return page_alloc(this, addr);
+        if (addr >= VA_LOWMAX || addr & PAGEOFFMASK) {
+            return -1;
+        }
+        x86_64_page* pg = kallocpage();
+        if (!pg || vmiter(this, addr).map(ka2pa(pg)) < 0) {
+            return -1;
+        }
+        canary_check(this);
+        return 0;
     }
 
     case SYSCALL_PAUSE: {

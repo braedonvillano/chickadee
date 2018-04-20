@@ -66,10 +66,6 @@ void cpustate::enqueue(proc* p) {
     if (current_ != p && !p->runq_links_.is_linked()) {
         assert(p->resumable() || p->state_ != proc::runnable);
         runq_.push_back(p);
-    } else if (current_ == p) {
-        log_printf("opsie: current == p");
-    } else {
-        log_printf("opsie: runq_links_.is_linked() is false!");
     }
 }
 
