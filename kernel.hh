@@ -19,6 +19,11 @@ struct page;
 //
 //    Functions, constants, and definitions for the kernel.
 
+struct wpret {
+    int stat;
+    pid_t pid_c;
+};
+
 // used for buddy allocators and pages array
 struct page {
     int pn;
@@ -40,10 +45,11 @@ struct __attribute__((aligned(4096))) proc {
 #endif
 
     enum state_t {
-        blank = 0, runnable, blocked, broken, exited
+        blank = 0, runnable, blocked, broken, exited, wexited, dead
     };
     state_t state_;                    // process state
     x86_64_pagetable* pagetable_;      // process's page table
+    int exit_status_;
 
     list_links runq_links_;
 

@@ -183,7 +183,8 @@ static void console_memviewer_virtual(memusage& mu, proc* vmp) {
             ch = ' ';
         } else {
             ch = mu.symbol_at(it.pa());
-            if (it.user()) { // switch foreground & background colors
+            if (vmp && vmp->pagetable_ && vmp->pagetable_ != early_pagetable) {
+            // if (it.user()) { // switch foreground & background colors
                 uint16_t z = (ch & 0x0F00) ^ ((ch & 0xF000) >> 4);
                 ch ^= z | (z << 4);
             }

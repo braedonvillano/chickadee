@@ -143,10 +143,27 @@ static inline pid_t sys_getppid() {
 //    Wait until process `pid` exits and report its status. The status
 //    is stored in `*status`, if `status != nullptr`. If `pid == 0`,
 //    waits for any child. If `options == W_NOHANG`, returns immediately.
+// static inline pid_t sys_waitpid(pid_t pid,
+//                                 int* status = nullptr,
+//                                 int options = 0) {
+//     return E_NOSYS;
+// }
+
 static inline pid_t sys_waitpid(pid_t pid,
-                                int* status = nullptr,
-                                int options = 0) {
-    return E_NOSYS;
+                               int* stat = nullptr,
+                               int opts = 0) {
+    register uintptr_t rax asm("rax") = SYSCALL_WAITPID;
+    register uintptr_t rcx asm("rcx");
+    asm volatile ("syscall"
+                  : "+a" (rax), "+D" (pid), "+S" (opts),
+                  "=c" (rcx)
+                  :
+                  : "cc", "r8", "r9", "r10", "r11");
+    if (stat) {
+        *stat = (int) rcx;
+        assert(*stat == (int) rcx);
+    }
+    return rax;
 }
 
 // sys_read(fd, buf, sz)

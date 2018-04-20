@@ -186,18 +186,10 @@ void proc::exception(regstate* regs) {
     assert((regs->reg_cs & 3) == 0 || this->state_ == proc::runnable);
 }
 
-// must be called with ptable_lock held
-bool proc_check() {
-    int count = 0;
-    for (int i = 0; i < NPROC; i++) {
-        if (!ptable[i]) {
-            count++;
-        } 
-    }
-    return (count > 1);
-}
+// the following functions can likely be deleted
+//     they need to be held with locks in most cases
+//     they are visual debugging functions to unfuck things
 
-// must be called with ptable_lock held
 void print_used_pids() {
     log_printf("the following pids are taken:");
     // go through ptable to find open proc
@@ -223,6 +215,66 @@ void print_runq__(proc* forked, proc* parent) {
 //    Fork helper function to make process children
 //    Exit helper function that essentially clears processes
 //    Canary check function ensures structs arent corrupted
+//    Waitpid helper to reap a process after exiting
+
+wpret wait_pid(pid_t pid, proc* parent, int opts = 0) {
+    assert(parent);
+    wpret wpr;
+    // initialize return before sending to parent
+    wpr.stat = 0;
+    bool wait = false;
+    int again = 0;
+    while (1) {
+        auto irqsp = process_hierarchy_lock.lock();
+        // check if the child list is empty
+        proc* p = parent->child_list.front();
+        if (!p) {
+            process_hierarchy_lock.unlock(irqsp);
+            wpr.pid_c = E_CHILD;
+            return wpr;
+        }
+        // cycle through the list to find a child
+        while (p) {
+            if (!pid) {
+                if (p->state_ == proc::wexited) {
+                    auto irqs = ptable_lock.lock();
+                    p->child_links_.erase();
+                    ptable[p->pid_] = nullptr;
+                    wpr.stat = p->exit_status_;
+                    wpr.pid_c = p->pid_;
+                    p->state_ = proc::dead;
+                    ptable_lock.unlock(irqs);
+                    process_hierarchy_lock.unlock(irqsp);
+                    kfree(p->pagetable_); kfree(p);
+                    return wpr;
+                }
+                wait = true;
+            } else if (p->pid_ == pid) {
+                if (p->state_ == proc::wexited) {
+                    auto irqs = ptable_lock.lock();
+                    p->child_links_.erase();
+                    ptable[p->pid_] = nullptr;
+                    wpr.stat = p->exit_status_;
+                    wpr.pid_c = p->pid_;
+                    p->state_ = proc::dead;
+                    ptable_lock.unlock(irqs);
+                    process_hierarchy_lock.unlock(irqsp);
+                    kfree(p->pagetable_); kfree(p);
+                    return wpr;
+                }
+                wait = true;
+                break;
+            }
+            p = parent->child_list.next(p);
+        }
+        process_hierarchy_lock.unlock(irqsp);
+        if (!wait) { wpr.pid_c = E_CHILD; break; }
+        if (opts) { wpr.pid_c = E_AGAIN; break; }
+        parent->yield();
+        again++;
+    }
+    return wpr;
+}
 
 int fork(proc* parent, regstate* regs) {
     auto irqs = ptable_lock.lock();
@@ -278,7 +330,6 @@ int fork(proc* parent, regstate* regs) {
     // put the proc on the runq
     int cpu = pid % ncpu;
     cpus[cpu].runq_lock_.lock_noirq();
-    p->runq_links_.reset();
     cpus[cpu].enqueue(p);
     cpus[cpu].runq_lock_.unlock_noirq();
     canary_check(parent);
@@ -290,13 +341,13 @@ void exit(proc* p, int flag) {
     auto irqs = ptable_lock.lock();
     pid_t pid = p->pid_;
     ptable[pid] = nullptr;
-    p->state_ = proc::exited;
     proc* init_p = ptable[INIT_PID];
-    assert(!ptable[pid]);
+    p->state_ = proc::exited;
     ptable_lock.unlock(irqs);
 
-    auto irqsp = process_hierarchy_lock.lock();
+
     if (flag) {
+        auto irqsp = process_hierarchy_lock.lock();
         p->child_links_.erase();
         proc* p_ = p->child_list.front();
         while (p_) {
@@ -306,8 +357,8 @@ void exit(proc* p, int flag) {
             init_p->child_list.push_front(p_);
             p_ = next;
         } 
+        process_hierarchy_lock.unlock(irqsp);
     }
-    process_hierarchy_lock.unlock(irqsp);
 
     // free the process's memory 
     for (vmiter it(p); it.low(); it.next()) {
@@ -319,6 +370,7 @@ void exit(proc* p, int flag) {
     for (ptiter it(p); it.low(); it.next()) {
         kfree((void*) pa2ka(it.ptp_pa()));
     }
+
 }
 
 void canary_check(proc* p) {
@@ -417,6 +469,14 @@ uintptr_t proc::syscall(regstate* regs) {
 
     case SYSCALL_FORK: {
         return fork(this, regs);
+    }
+
+    case SYSCALL_WAITPID: {
+        pid_t pid = regs->reg_rdi;
+        int opts = regs->reg_rsi;
+        // wpret wpr = wait_pid(pid, this, opts);
+        asm("" : : "c" (0));
+        return 0;
     }
 
     case SYSCALL_READ: {

@@ -98,9 +98,8 @@ void* kalloc(size_t sz) {
     int req_ord = PAGE_ORD(sz) > MIN_ORD ? PAGE_ORD(sz) : MIN_ORD;
     int n = req_ord - MIN_ORD;
     if (req_ord > MAX_ORD || sz == 0) return nullptr;
-
-    auto irqs = page_lock.lock();
     // find the next non-empty list
+    auto irqs = page_lock.lock();
     page* block = nullptr;
     for (int j = req_ord - MIN_ORD; j < ARR_SZ; j++) {
         if (!lists[j].empty()) {
