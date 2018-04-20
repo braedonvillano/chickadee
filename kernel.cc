@@ -18,7 +18,7 @@ static void kdisplay_ontick();
 static void process_setup(pid_t pid, const char* program_name);
 static void build_init_proc();
 static void canary_check(proc* p = nullptr);
-static void exit(proc* p, int flag);
+static void exit(proc* p, int flag, int exit_stat);
 
 
 // kernel_start(command)
@@ -302,19 +302,19 @@ int fork(proc* parent, regstate* regs) {
         if (!it.user() || !it.present()) continue;
         if (it.pa() == ktext2pa(console)) {
             if (vmiter(p, it.va()).map(ktext2pa(console)) < 0) {
-                exit(p, 0); kfree(p); kfree(npt);
+                exit(p, 0, -1); kfree(p); kfree(npt);
                 return -1;
             }
             continue;
         }
         x86_64_page* pg = kallocpage();
         if (!pg) {
-            exit(p, 0); kfree(p); kfree(npt); kfree(pg); 
+            exit(p, 0, -1); kfree(p); kfree(npt); kfree(pg); 
             return -1;
         }
         memcpy(pg, (void*) it.ka(), PAGESIZE);
         if (vmiter(p, it.va()).map(ka2pa(pg), it.perm()) < 0) {
-            exit(p, 0); kfree(p); kfree(npt); kfree(pg); 
+            exit(p, 0, -1); kfree(p); kfree(npt); kfree(pg); 
             return -1;
         }
     }
@@ -337,18 +337,18 @@ int fork(proc* parent, regstate* regs) {
     return pid;
 }
 
-void exit(proc* p, int flag) {
+void exit(proc* p, int flag, int exit_stat) {
     auto irqs = ptable_lock.lock();
     pid_t pid = p->pid_;
     ptable[pid] = nullptr;
     proc* init_p = ptable[INIT_PID];
-    p->state_ = proc::exited;
+    p->state_ = proc::wexited;
+    p->exit_status_ = exit_stat;
     ptable_lock.unlock(irqs);
-
 
     if (flag) {
         auto irqsp = process_hierarchy_lock.lock();
-        p->child_links_.erase();
+        // p->child_links_.erase();
         proc* p_ = p->child_list.front();
         while (p_) {
             auto next = p->child_list.next(p_);
@@ -370,7 +370,6 @@ void exit(proc* p, int flag) {
     for (ptiter it(p); it.low(); it.next()) {
         kfree((void*) pa2ka(it.ptp_pa()));
     }
-
 }
 
 void canary_check(proc* p) {
@@ -436,7 +435,7 @@ uintptr_t proc::syscall(regstate* regs) {
     }
 
     case SYSCALL_EXIT: {
-        exit(this, 1);
+        exit(this, 1, regs->reg_rdi);
         this->yield_noreturn();
     }
 
@@ -474,9 +473,9 @@ uintptr_t proc::syscall(regstate* regs) {
     case SYSCALL_WAITPID: {
         pid_t pid = regs->reg_rdi;
         int opts = regs->reg_rsi;
-        // wpret wpr = wait_pid(pid, this, opts);
-        asm("" : : "c" (0));
-        return 0;
+        wpret wpr = wait_pid(pid, this, opts);
+        asm("" : : "c" (wpr.stat));
+        return wpr.pid_c;
     }
 
     case SYSCALL_READ: {

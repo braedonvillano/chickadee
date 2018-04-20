@@ -87,6 +87,7 @@ void process_main() {
     for (size_t i = 0; i != arraysize(order); ++i) {
         int status = 0;
         pid_t ch = sys_waitpid(children[i], &status);
+        console_printf("passing now\n");
         assert_eq(ch, children[i]);
 
         console_printf("%d @%lu: exit status %d\n", ch, i, status);

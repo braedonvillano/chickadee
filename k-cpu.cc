@@ -125,8 +125,9 @@ void cpustate::schedule(proc* yielding_from) {
         runq_lock_.lock_noirq();
         if (proc* p = current_) {
             if (current_->state_ == proc::exited) {
-                kfree(current_->pagetable_);
-                kfree(current_);
+                // kfree(current_->pagetable_);
+                // kfree(current_);
+                current_->state_ = proc::wexited;
                 p = nullptr;
             }
             current_ = yielding_from = nullptr;

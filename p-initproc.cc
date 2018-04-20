@@ -9,5 +9,6 @@ void process_main(void) {
 
     while (1) {
         sys_yield();
+        // sys_waitpid(0);
     }
 }
