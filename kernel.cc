@@ -338,26 +338,24 @@ int fork(proc* parent, regstate* regs) {
 void exit(proc* p, int flag, int exit_stat) {
     auto irqs = ptable_lock.lock();
     pid_t pid = p->pid_;
-    ptable[pid] = nullptr;
     proc* init_p = ptable[INIT_PID];
+    // ptable[pid] = nullptr;
     p->state_ = proc::wexited;
     p->exit_status_ = exit_stat;
     ptable_lock.unlock(irqs);
-
+    // reparent the process if it is actually exiting
     if (flag) {
         auto irqsp = process_hierarchy_lock.lock();
-        // p->child_links_.erase();
         proc* p_ = p->child_list.front();
         while (p_) {
-            auto next = p->child_list.next(p_);
+            auto nxt = p->child_list.next(p_);
             p_->ppid_ = INIT_PID;
             p_->child_links_.erase();
             init_p->child_list.push_front(p_);
-            p_ = next;
+            p_ = nxt;
         } 
         process_hierarchy_lock.unlock(irqsp);
     }
-
     // free the process's memory 
     for (vmiter it(p); it.low(); it.next()) {
         if (it.user() && it.present() && it.pa() != ktext2pa(console)) { 
