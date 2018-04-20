@@ -19,6 +19,8 @@ static void process_setup(pid_t pid, const char* program_name);
 static void build_init_proc();
 static void canary_check(proc* p = nullptr);
 static void exit(proc* p, int flag, int exit_stat);
+static void init_reaper();
+static wpret wait_pid(pid_t pid, proc* parent, int opts = 0);
 
 
 // kernel_start(command)
@@ -46,25 +48,21 @@ void kernel_start(const char* command) {
     cpus[0].schedule(nullptr);
 }
 
-// this function builds the init process for reparenting
+// init function responsible for reaping zombie children
+void init_reaper(proc* p) {
+    while (1) {
+        wait_pid(0, p, W_NOHANG);
+        // p->yield();
+    }
+}
+
+// this is the kernel task (duhhh) initial process
 void build_init_proc() {
     assert(!ptable[INIT_PID]);
     proc* p = ptable[INIT_PID] = kalloc_proc();
-    x86_64_pagetable* npt = kalloc_pagetable();
-    assert(p && npt);
-    p->init_user(INIT_PID, npt);
+    assert(p);
 
-    p->ppid_ = INIT_PID;
-
-    int r = p->load("initproc");
-    assert(r >= 0);
-    p->regs_->reg_rsp = MEMSIZE_VIRTUAL;
-    x86_64_page* stkpg = kallocpage();
-    assert(stkpg);
-    r = vmiter(p, MEMSIZE_VIRTUAL - PAGESIZE).map(ka2pa(stkpg));
-    assert(r >= 0);
-    r = vmiter(p, ktext2pa(console)).map(ktext2pa(console), PTE_P | PTE_W | PTE_U);
-    assert(r >= 0);
+    p->init_kernel(INIT_PID, init_reaper);
 
     int cpu = INIT_PID % ncpu;
     cpus[cpu].runq_lock_.lock_noirq();
@@ -217,7 +215,7 @@ void print_runq__(proc* forked, proc* parent) {
 //    Canary check function ensures structs arent corrupted
 //    Waitpid helper to reap a process after exiting
 
-wpret wait_pid(pid_t pid, proc* parent, int opts = 0) {
+wpret wait_pid(pid_t pid, proc* parent, int opts) {
     assert(parent);
     wpret wpr;
     // initialize return before sending to parent
