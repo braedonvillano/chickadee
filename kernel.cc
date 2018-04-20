@@ -245,10 +245,10 @@ wpret wait_pid(pid_t pid, proc* parent, int opts = 0) {
                 }
                 wait = true;
             } else if (p->pid_ == pid) {
-                if (p->pid_ == 6 && again % 5000) {
-                    log_printf("specfic proc -> pid: %d\n", p->pid_);
-                    a_holy_bond(parent);
-                }
+                // if (p->pid_ == 6 && again % 5000) {
+                //     log_printf("specfic proc -> pid: %d\n", p->pid_);
+                //     a_holy_bond(parent);
+                // }
                 if (p->state_ == proc::wexited) {
                     auto irqs = ptable_lock.lock();
                     p->child_links_.erase();
@@ -337,6 +337,7 @@ int fork(proc* parent, regstate* regs) {
     // put the proc on the runq
     int cpu = pid % ncpu;
     cpus[cpu].runq_lock_.lock_noirq();
+    // p->runq_links_.reset();
     cpus[cpu].enqueue(p);
     cpus[cpu].runq_lock_.unlock_noirq();
     canary_check(parent);
@@ -371,6 +372,7 @@ void proc_cleanup(proc* p) {
             kfree((void*) it.ka());
         }
     }
+    log_backtrace("help");
     // free the process's page tabeles
     for (ptiter it(p); it.low(); it.next()) {
         kfree((void*) pa2ka(it.ptp_pa()));

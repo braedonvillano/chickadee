@@ -67,6 +67,8 @@ void proc::init_user(pid_t pid, x86_64_pagetable* pt) {
 
     pagetable_ = pt;
 
+    // runq_links_.reset();
+
     canary_ = CANARY;
 }
 
