@@ -339,7 +339,7 @@ void exit(proc* p, int flag, int exit_stat) {
     auto irqs = ptable_lock.lock();
     pid_t pid = p->pid_;
     proc* init_p = ptable[INIT_PID];
-    // ptable[pid] = nullptr;
+    ptable[pid] = nullptr;
     p->state_ = proc::wexited;
     p->exit_status_ = exit_stat;
     ptable_lock.unlock(irqs);
