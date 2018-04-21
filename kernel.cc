@@ -24,6 +24,8 @@ static void init_reaper();
 static void reap_child(proc* p, wpret* wpr);
 static wpret wait_pid(pid_t pid, proc* parent, int opts = 0);
 
+static wpret wait_pid_(pid_t pid, proc* parent, int opts = 0);
+
 
 // kernel_start(command)
 //    Initialize the hardware and processes and start running. The `command`
@@ -230,7 +232,7 @@ void print_waitq_(wait_queue& wq) {
 //    Waitpid helper to reap a process after exiting
 
 void wait_pid_cond(proc* parent, wpret* wpr, pid_t pid, int opts) {
-    wpr->pid_c = E_CHILD; 
+    wpr->pid_c = E_CHILD; wpr->p = nullptr;
     wpr->block = false; wpr->exit = false;
     auto irqsp = familial_lock.lock();
     proc* p = parent->child_list.front(); 
@@ -249,7 +251,7 @@ void wait_pid_cond(proc* parent, wpret* wpr, pid_t pid, int opts) {
     familial_lock.unlock(irqsp);
 }
 
-wpret wait_pid(pid_t pid, proc* parent, int opts) {
+wpret wait_pid_(pid_t pid, proc* parent, int opts) {
     wpret wpr;
     waiter(parent).block_until(waitq, 
         [&] () { wait_pid_cond(parent, &wpr, pid, opts); return !wpr.block; });
@@ -257,12 +259,12 @@ wpret wait_pid(pid_t pid, proc* parent, int opts) {
         auto irqs = familial_lock.lock();
         reap_child(wpr.p, &wpr); 
         familial_lock.unlock(irqs);
-        kfree(wpr.p->pagetable_); kfree(wpr.p);
+        kfree(wpr.p->pagetable_); kfree(wpr.p);        
     }
     return wpr;
 }
 
-wpret wait_pid_(pid_t pid, proc* parent, int opts) {
+wpret wait_pid(pid_t pid, proc* parent, int opts) {
     wpret wpr;
     bool wait = false;
     waiter w(parent);
@@ -371,9 +373,9 @@ void exit(proc* p, int flag, int exit_stat) {
     auto irqs = ptable_lock.lock();
     pid_t pid = p->pid_;
     proc* init_p = ptable[INIT_PID];
-    ptable[pid] = nullptr;
     p->state_ = proc::exited;
     p->exit_status_ = exit_stat;
+    if (!flag) { ptable[pid] = nullptr; }
     // reparent the process if it is actually exiting
     if (flag) {
         auto irqsp = familial_lock.lock();
