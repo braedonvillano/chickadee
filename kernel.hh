@@ -20,7 +20,10 @@ struct page;
 //    Functions, constants, and definitions for the kernel.
 
 struct wpret {
+    proc* p;
     int stat;
+    bool exit;
+    bool block;
     pid_t pid_c;
     wpret() : stat(0) {}
 };
@@ -99,7 +102,7 @@ struct __attribute__((aligned(4096))) proc {
 #define NPROC 16
 extern proc* ptable[NPROC];
 extern spinlock ptable_lock;
-extern spinlock process_hierarchy_lock;
+extern spinlock family_lock;
 #define KTASKSTACK_SIZE  4096
 
 // allocate a new `proc` and call its constructor
@@ -141,7 +144,7 @@ struct __attribute__((aligned(4096))) cpustate {
 
     void exception(regstate* reg);
 
-    void enqueue(proc* p);
+    int enqueue(proc* p);
     void print_runq_(proc* exited);
     void schedule(proc* yielding_from) __attribute__((noreturn));
 
@@ -497,12 +500,13 @@ inline bool proc::contains(uintptr_t addr) const {
 // proc::wake()
 //   Wakes up function that is on the waitq
 inline void proc::wake() {
-    // auto irqs = cpus[cpu_].runq_lock_.lock();
-    // if (state_ == blocked) {
-    //     state_ = runnable;
-    //     cpus[cpu_].enqueue(this);
-    // }
-    // cpus[cpu_].runq_lock_.unlock(irqs);
+    auto irqs = cpus[cpu_].runq_lock_.lock();
+    if (state_ == blocked) {
+        state_ = runnable;
+        int r = cpus[cpu_].enqueue(this);
+        assert(r > 0);
+    }
+    cpus[cpu_].runq_lock_.unlock(irqs);
 }
 
 

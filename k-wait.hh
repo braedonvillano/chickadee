@@ -34,6 +34,7 @@ struct wait_queue {
 
     // you might want to provide some convenience methods here
     inline void wake_all();
+    inline void wake_pid(pid_t pid);
 };
 
 
@@ -55,13 +56,11 @@ inline void waiter::prepare(wait_queue* wq) {
     p_->state_ == proc::blocked;
     wq->q_.push_back(this);
     wq->lock_.unlock(irqs);
-    // your code here
 }
 
 inline void waiter::block() {
     p_->yield();
     clear();
-    // your code here
 }
 
 inline void waiter::clear() {
@@ -69,11 +68,10 @@ inline void waiter::clear() {
     p_->state_ == proc::runnable;
     links_.erase();
     wq_->lock_.unlock(irqs);
-    // your code here
 }
 
 inline void waiter::wake() {
-    // p_->wake();
+    p_->wake();
     // your code here
 }
 
@@ -130,6 +128,16 @@ inline void wait_queue::wake_all() {
     auto irqs = lock_.lock();
     while (auto w = q_.pop_front()) {
         w->wake();
+    }
+    lock_.unlock(irqs);
+}
+
+inline void wait_queue::wake_pid(pid_t pid) {
+    auto irqs = lock_.lock();
+    for (auto w = q_.front(); w; w = q_.next(w)) {
+        if (w->p_->pid_ == pid) {
+            w->wake(); q_.erase(w); break;
+        }
     }
     lock_.unlock(irqs);
 }

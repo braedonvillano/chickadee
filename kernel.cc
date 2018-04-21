@@ -12,7 +12,8 @@
 volatile unsigned long ticks;   // # timer interrupts so far on CPU 0
 int kdisplay;                   // type of display
 
-spinlock process_hierarchy_lock;
+spinlock familial_lock;
+wait_queue waitq;
 
 static void kdisplay_ontick();
 static void process_setup(pid_t pid, const char* program_name);
@@ -88,12 +89,12 @@ void process_setup(pid_t pid, const char* name) {
     assert(p && npt);
     p->init_user(pid, npt);
 
-    process_hierarchy_lock.lock_noirq();
+    familial_lock.lock_noirq();
     p->ppid_ = INIT_PID;
     p->child_links_.reset();
     ptable[INIT_PID]->child_list.push_front(p);
     p->child_list.reset();
-    process_hierarchy_lock.unlock_noirq();
+    familial_lock.unlock_noirq();
 
     int r = p->load(name);
     assert(r >= 0);
@@ -104,6 +105,7 @@ void process_setup(pid_t pid, const char* name) {
     assert(r >= 0);
     r = vmiter(p, ktext2pa(console)).map(ktext2pa(console), PTE_P | PTE_W | PTE_U);
     assert(r >= 0);
+    waitq.q_.reset();
 
     int cpu = pid % ncpu;
     cpus[cpu].runq_lock_.lock_noirq();
@@ -217,15 +219,70 @@ void print_runq__(proc* forked, proc* parent) {
 //    Canary check function ensures structs arent corrupted
 //    Waitpid helper to reap a process after exiting
 
+// wpret wait_pid__(pid_t pid, proc* parent, int opts) {
+//     waiter w(parent);
+//     w.block_until(&waitq, [&] () { return  });
+// }
+
+/* 
+a boolean function that returns whether we should block or not
+when do we need to block?
+    - if there is any child to wait for on pid == 0
+    - if there is a specific child to wait for
+when do we return E_CHILD?
+    - when there are no children at all (unecessary)
+    - when the pid is not a child at all
+
+basic structure: 
+    - cycle through all children (setting 'p' to the current proc)
+    - if pid == 0 and state == wexited -> return true
+    - if pid is found and state == wexited -> return true
+    - if at end there is no proc found, then return true if W_NOHANG
+*/
+
+void wait_pid_cond(proc* parent, wpret* wpr, pid_t pid, int opts) {
+    wpr->pid_c = E_CHILD; 
+    wpr->block = false; wpr->exit = false;
+    auto irqsp = familial_lock.lock();
+    proc* p = parent->child_list.front(); 
+    if (!p) { familial_lock.unlock(irqsp); return; }
+    while (p) {
+        if (p->state_ == proc::wexited) {
+            if (!pid || p->pid_ == pid) {
+                wpr->p = p; wpr->exit = true; break;
+            }
+        } else if (!pid || p->pid_ == pid) {
+            wpr->block = (bool) !opts; 
+            if (opts) { wpr->pid_c = E_AGAIN; } break;
+        }
+        p = parent->child_list.next(p);
+    }
+    familial_lock.unlock(irqsp);
+}
+
+wpret wait_pid_(pid_t pid, proc* parent, int opts) {
+    wpret wpr;
+    waiter(parent).block_until(waitq, 
+        [&] () { wait_pid_cond(parent, &wpr, pid, opts); return !wpr.block; });
+    if (wpr.exit) { 
+        auto irqs = familial_lock.lock();
+        reap_child(wpr.p, &wpr); 
+        familial_lock.unlock(irqs);
+        kfree(wpr.p->pagetable_); kfree(wpr.p);
+    }
+    return wpr;
+}
+
 wpret wait_pid(pid_t pid, proc* parent, int opts) {
     wpret wpr;
     bool wait = false;
+    waiter w(parent);
     while (1) {
-        auto irqsp = process_hierarchy_lock.lock();
+        auto irqsp = familial_lock.lock();
         // check if the child list is empty
         proc* p = parent->child_list.front();
         if (!p) {
-            process_hierarchy_lock.unlock(irqsp);
+            familial_lock.unlock(irqsp);
             wpr.pid_c = E_CHILD;
             return wpr;
         }
@@ -234,7 +291,7 @@ wpret wait_pid(pid_t pid, proc* parent, int opts) {
             if (!pid) {
                 if (p->state_ == proc::wexited) {
                     reap_child(p, &wpr);
-                    process_hierarchy_lock.unlock(irqsp);
+                    familial_lock.unlock(irqsp);
                     kfree(p->pagetable_); kfree(p);
                     return wpr;
                 }
@@ -242,7 +299,7 @@ wpret wait_pid(pid_t pid, proc* parent, int opts) {
             } else if (p->pid_ == pid) {
                 if (p->state_ == proc::wexited) {
                     reap_child(p, &wpr);
-                    process_hierarchy_lock.unlock(irqsp);
+                    familial_lock.unlock(irqsp);
                     kfree(p->pagetable_); kfree(p);
                     return wpr;
                 }
@@ -251,7 +308,7 @@ wpret wait_pid(pid_t pid, proc* parent, int opts) {
             }
             p = parent->child_list.next(p);
         }
-        process_hierarchy_lock.unlock(irqsp);
+        familial_lock.unlock(irqsp);
         if (!wait) { wpr.pid_c = E_CHILD; break; }
         if (opts) { wpr.pid_c = E_AGAIN; break; }
         parent->yield();
@@ -304,17 +361,18 @@ int fork(proc* parent, regstate* regs) {
     memcpy(p->regs_, regs, sizeof(regstate));
     p->regs_->reg_rax = 0;
     // reparent the new process
-    auto irqsp = process_hierarchy_lock.lock();
+    auto irqsp = familial_lock.lock();
     p->ppid_ = parent->pid_;
     p->child_links_.reset();
     parent->child_list.push_front(p);
     p->child_list.reset();
-    process_hierarchy_lock.unlock(irqsp);
+    familial_lock.unlock(irqsp);
     // put the proc on the runq
     int cpu = pid % ncpu;
-    cpus[cpu].runq_lock_.lock_noirq();
-    cpus[cpu].enqueue(p);
-    cpus[cpu].runq_lock_.unlock_noirq();
+    auto irqsc = cpus[cpu].runq_lock_.lock();
+    int r = cpus[cpu].enqueue(p);
+    if (r < 0) p->cpu_ = cpu;
+    cpus[cpu].runq_lock_.unlock(irqsc);
     canary_check(parent);
 
     return pid;
@@ -329,13 +387,17 @@ void exit(proc* p, int flag, int exit_stat) {
     p->exit_status_ = exit_stat;
     // reparent the process if it is actually exiting
     if (flag) {
-        auto irqsp = process_hierarchy_lock.lock();
+        auto irqsp = familial_lock.lock();
         while (proc* p_ = p->child_list.pop_front()) {
             p_->ppid_ = INIT_PID;
             init_p->child_list.push_front(p_);
         } 
-        process_hierarchy_lock.unlock(irqsp);
+        familial_lock.unlock(irqsp);
     }
+
+    // i have to wake up mommy and daddy!
+    waitq.wake_pid(p->ppid_);
+
     // free the process's memory 
     for (vmiter it(p); it.low(); it.next()) {
         if (it.user() && it.present() && it.pa() != ktext2pa(console)) { 

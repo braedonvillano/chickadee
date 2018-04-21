@@ -65,6 +65,8 @@ void proc::init_user(pid_t pid, x86_64_pagetable* pt) {
 
     state_ = proc::runnable;
 
+    cpu_ = -1;
+
     runq_links_.reset();
 
     pagetable_ = pt;
