@@ -50,18 +50,30 @@ inline void waiter::prepare(wait_queue& wq) {
 }
 
 inline void waiter::prepare(wait_queue* wq) {
+    auto irqs = wq->lock_.lock();
+    wq_ = wq;
+    p_->state_ == proc::blocked;
+    wq->q_.push_back(this);
+    wq->lock_.unlock(irqs);
     // your code here
 }
 
 inline void waiter::block() {
+    p_->yield();
+    clear();
     // your code here
 }
 
 inline void waiter::clear() {
+    auto irqs = wq_->lock_.lock();
+    p_->state_ == proc::runnable;
+    links_.erase();
+    wq_->lock_.unlock(irqs);
     // your code here
 }
 
 inline void waiter::wake() {
+    // p_->wake();
     // your code here
 }
 

@@ -158,8 +158,8 @@ static inline pid_t sys_waitpid(pid_t pid,
                   : "+a" (rax), "+D" (pid), "+S" (opts),
                   "=c" (rcx)
                   :
-                  : "cc", "r8", "r9", "r10", "r11");
-    if (stat) {
+                  : "cc", "rdx", "r8", "r9", "r10", "r11");
+    if (stat && rax > 0) {
         *stat = (int) rcx;
         assert(*stat == (int) rcx);
     }

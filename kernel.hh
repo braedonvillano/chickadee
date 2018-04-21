@@ -22,6 +22,7 @@ struct page;
 struct wpret {
     int stat;
     pid_t pid_c;
+    wpret() : stat(0) {}
 };
 
 // used for buddy allocators and pages array
@@ -50,6 +51,7 @@ struct __attribute__((aligned(4096))) proc {
     state_t state_;                    // process state
     x86_64_pagetable* pagetable_;      // process's page table
     int exit_status_;
+    int cpu_;
 
     list_links runq_links_;
 
@@ -82,6 +84,7 @@ struct __attribute__((aligned(4096))) proc {
     void yield_noreturn() __attribute__((noreturn));
     void resume() __attribute__((noreturn));
 
+    inline void wake();
     inline bool resumable() const;
 
     inline irqstate lock_pagetable_read();
@@ -490,6 +493,18 @@ inline bool proc::contains(uintptr_t addr) const {
     uintptr_t delta = addr - reinterpret_cast<uintptr_t>(this);
     return delta <= KTASKSTACK_SIZE;
 }
+
+// proc::wake()
+//   Wakes up function that is on the waitq
+inline void proc::wake() {
+    // auto irqs = cpus[cpu_].runq_lock_.lock();
+    // if (state_ == blocked) {
+    //     state_ = runnable;
+    //     cpus[cpu_].enqueue(this);
+    // }
+    // cpus[cpu_].runq_lock_.unlock(irqs);
+}
+
 
 // proc::resumable()
 //    Return true iff this `proc` can be resumed (`regs_` or `yields_`

@@ -20,6 +20,7 @@ static void build_init_proc();
 static void canary_check(proc* p = nullptr);
 static void exit(proc* p, int flag, int exit_stat);
 static void init_reaper();
+static void reap_child(proc* p, wpret* wpr);
 static wpret wait_pid(pid_t pid, proc* parent, int opts = 0);
 
 
@@ -209,6 +210,7 @@ void print_runq__(proc* forked, proc* parent) {
     assert(find);
 }
 
+
 // syscall helper functions below
 //    Fork helper function to make process children
 //    Exit helper function that essentially clears processes
@@ -216,12 +218,8 @@ void print_runq__(proc* forked, proc* parent) {
 //    Waitpid helper to reap a process after exiting
 
 wpret wait_pid(pid_t pid, proc* parent, int opts) {
-    assert(parent);
     wpret wpr;
-    // initialize return before sending to parent
-    wpr.stat = 0;
     bool wait = false;
-    int again = 0;
     while (1) {
         auto irqsp = process_hierarchy_lock.lock();
         // check if the child list is empty
@@ -235,13 +233,7 @@ wpret wait_pid(pid_t pid, proc* parent, int opts) {
         while (p) {
             if (!pid) {
                 if (p->state_ == proc::wexited) {
-                    auto irqs = ptable_lock.lock();
-                    p->child_links_.erase();
-                    ptable[p->pid_] = nullptr;
-                    wpr.stat = p->exit_status_;
-                    wpr.pid_c = p->pid_;
-                    p->state_ = proc::dead;
-                    ptable_lock.unlock(irqs);
+                    reap_child(p, &wpr);
                     process_hierarchy_lock.unlock(irqsp);
                     kfree(p->pagetable_); kfree(p);
                     return wpr;
@@ -249,13 +241,7 @@ wpret wait_pid(pid_t pid, proc* parent, int opts) {
                 wait = true;
             } else if (p->pid_ == pid) {
                 if (p->state_ == proc::wexited) {
-                    auto irqs = ptable_lock.lock();
-                    p->child_links_.erase();
-                    ptable[p->pid_] = nullptr;
-                    wpr.stat = p->exit_status_;
-                    wpr.pid_c = p->pid_;
-                    p->state_ = proc::dead;
-                    ptable_lock.unlock(irqs);
+                    reap_child(p, &wpr);
                     process_hierarchy_lock.unlock(irqsp);
                     kfree(p->pagetable_); kfree(p);
                     return wpr;
@@ -269,7 +255,6 @@ wpret wait_pid(pid_t pid, proc* parent, int opts) {
         if (!wait) { wpr.pid_c = E_CHILD; break; }
         if (opts) { wpr.pid_c = E_AGAIN; break; }
         parent->yield();
-        again++;
     }
     return wpr;
 }
@@ -340,19 +325,14 @@ void exit(proc* p, int flag, int exit_stat) {
     pid_t pid = p->pid_;
     proc* init_p = ptable[INIT_PID];
     ptable[pid] = nullptr;
-    p->state_ = proc::wexited;
+    p->state_ = proc::exited;
     p->exit_status_ = exit_stat;
-    ptable_lock.unlock(irqs);
     // reparent the process if it is actually exiting
     if (flag) {
         auto irqsp = process_hierarchy_lock.lock();
-        proc* p_ = p->child_list.front();
-        while (p_) {
-            auto nxt = p->child_list.next(p_);
+        while (proc* p_ = p->child_list.pop_front()) {
             p_->ppid_ = INIT_PID;
-            p_->child_links_.erase();
             init_p->child_list.push_front(p_);
-            p_ = nxt;
         } 
         process_hierarchy_lock.unlock(irqsp);
     }
@@ -366,6 +346,18 @@ void exit(proc* p, int flag, int exit_stat) {
     for (ptiter it(p); it.low(); it.next()) {
         kfree((void*) pa2ka(it.ptp_pa()));
     }
+    ptable_lock.unlock(irqs);
+}
+
+
+void reap_child(proc* p, wpret* wpr) {
+    auto irqs = ptable_lock.lock();
+    p->child_links_.erase();
+    ptable[p->pid_] = nullptr;
+    wpr->stat = p->exit_status_;
+    wpr->pid_c = p->pid_;
+    p->state_ = proc::dead;
+    ptable_lock.unlock(irqs);
 }
 
 void canary_check(proc* p) {

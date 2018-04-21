@@ -20,7 +20,6 @@ void process_main() {
         }
 
         pid_t waited = sys_waitpid(child);
-        console_printf("what in the name of butt, now we pass\n");
         assert_eq(waited, child);
         console_printf("zombies hopefully being reaped\n");
         sys_msleep(200);

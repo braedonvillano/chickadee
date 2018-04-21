@@ -79,7 +79,7 @@ void memusage::refresh() {
     // must be called with `ptable_lock` held
     for (int pid = 1; pid < NPROC; ++pid) {
         proc* p = ptable[pid];
-        if (p) {
+        if (p && p->state_ != proc::exited && p->state_ != proc::wexited) {
             mark(ka2pa(p), f_kernel | f_process(pid));
 
             auto irqs = p->lock_pagetable_read();
