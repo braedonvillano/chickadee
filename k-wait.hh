@@ -54,6 +54,7 @@ inline void waiter::prepare(wait_queue* wq) {
     auto irqs = wq->lock_.lock();
     wq_ = wq;
     p_->state_ == proc::blocked;
+    this->links_.reset();
     wq->q_.push_back(this);
     wq->lock_.unlock(irqs);
 }
@@ -66,13 +67,14 @@ inline void waiter::block() {
 inline void waiter::clear() {
     auto irqs = wq_->lock_.lock();
     p_->state_ == proc::runnable;
-    links_.erase();
+    if (links_.is_linked()) {
+        links_.erase();
+    }
     wq_->lock_.unlock(irqs);
 }
 
 inline void waiter::wake() {
     p_->wake();
-    // your code here
 }
 
 
@@ -136,7 +138,9 @@ inline void wait_queue::wake_pid(pid_t pid) {
     auto irqs = lock_.lock();
     for (auto w = q_.front(); w; w = q_.next(w)) {
         if (w->p_->pid_ == pid) {
-            w->wake(); q_.erase(w); break;
+            w->wake(); 
+            q_.erase(w);
+            break;
         }
     }
     lock_.unlock(irqs);

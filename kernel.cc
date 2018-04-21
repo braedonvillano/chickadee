@@ -212,33 +212,22 @@ void print_runq__(proc* forked, proc* parent) {
     assert(find);
 }
 
+void print_waitq_(wait_queue& wq) {
+    log_printf("the things on the runq_ are: ");
+    auto irqs = wq.lock_.lock();
+    for (auto w = wq.q_.front(); w; w = wq.q_.next(w)) {
+       log_printf(" %d", w->p_->pid_);
+    }
+    wq.lock_.unlock(irqs);
+    log_printf("\n");
+}
+
 
 // syscall helper functions below
 //    Fork helper function to make process children
 //    Exit helper function that essentially clears processes
 //    Canary check function ensures structs arent corrupted
 //    Waitpid helper to reap a process after exiting
-
-// wpret wait_pid__(pid_t pid, proc* parent, int opts) {
-//     waiter w(parent);
-//     w.block_until(&waitq, [&] () { return  });
-// }
-
-/* 
-a boolean function that returns whether we should block or not
-when do we need to block?
-    - if there is any child to wait for on pid == 0
-    - if there is a specific child to wait for
-when do we return E_CHILD?
-    - when there are no children at all (unecessary)
-    - when the pid is not a child at all
-
-basic structure: 
-    - cycle through all children (setting 'p' to the current proc)
-    - if pid == 0 and state == wexited -> return true
-    - if pid is found and state == wexited -> return true
-    - if at end there is no proc found, then return true if W_NOHANG
-*/
 
 void wait_pid_cond(proc* parent, wpret* wpr, pid_t pid, int opts) {
     wpr->pid_c = E_CHILD; 
@@ -260,7 +249,7 @@ void wait_pid_cond(proc* parent, wpret* wpr, pid_t pid, int opts) {
     familial_lock.unlock(irqsp);
 }
 
-wpret wait_pid_(pid_t pid, proc* parent, int opts) {
+wpret wait_pid(pid_t pid, proc* parent, int opts) {
     wpret wpr;
     waiter(parent).block_until(waitq, 
         [&] () { wait_pid_cond(parent, &wpr, pid, opts); return !wpr.block; });
@@ -273,7 +262,7 @@ wpret wait_pid_(pid_t pid, proc* parent, int opts) {
     return wpr;
 }
 
-wpret wait_pid(pid_t pid, proc* parent, int opts) {
+wpret wait_pid_(pid_t pid, proc* parent, int opts) {
     wpret wpr;
     bool wait = false;
     waiter w(parent);
@@ -394,10 +383,7 @@ void exit(proc* p, int flag, int exit_stat) {
         } 
         familial_lock.unlock(irqsp);
     }
-
-    // i have to wake up mommy and daddy!
     waitq.wake_pid(p->ppid_);
-
     // free the process's memory 
     for (vmiter it(p); it.low(); it.next()) {
         if (it.user() && it.present() && it.pa() != ktext2pa(console)) { 
