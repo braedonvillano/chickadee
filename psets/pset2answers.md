@@ -60,6 +60,13 @@ Answers to written questions
 }`
 
 
+`unsigned long want_ticks = ticks + (regs->reg_rdi + 9) / 10;
+sti();
+while (long(want_ticks - ticks) > 0) {
+    this->yield();
+}
+return 0;`
+
 
 Grading notes
 -------------

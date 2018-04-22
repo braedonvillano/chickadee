@@ -25,7 +25,10 @@ struct wpret {
     bool exit;
     bool block;
     pid_t pid_c;
-    wpret() : stat(0) {}
+    wpret() : p(nullptr), stat(0), exit(false), 
+    block(false), pid_c(E_CHILD) {}
+    // exit(false), pid_c(E_CHILD),
+    // block(false), p(nullptr)
 };
 
 // used for buddy allocators and pages array
@@ -53,8 +56,10 @@ struct __attribute__((aligned(4096))) proc {
     };
     state_t state_;                    // process state
     x86_64_pagetable* pagetable_;      // process's page table
-    int exit_status_;
     int cpu_;
+    int sleepq_;
+    int sleepq__;
+    int exit_status_;
 
     list_links runq_links_;
 
@@ -102,7 +107,7 @@ struct __attribute__((aligned(4096))) proc {
 #define NPROC 16
 extern proc* ptable[NPROC];
 extern spinlock ptable_lock;
-extern spinlock family_lock;
+extern spinlock familial_lock;
 #define KTASKSTACK_SIZE  4096
 
 // allocate a new `proc` and call its constructor

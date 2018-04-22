@@ -51,8 +51,8 @@ inline void waiter::prepare(wait_queue& wq) {
 }
 
 inline void waiter::prepare(wait_queue* wq) {
-    auto irqs = wq->lock_.lock();
     wq_ = wq;
+    auto irqs = wq->lock_.lock();
     p_->state_ == proc::blocked;
     this->links_.reset();
     wq->q_.push_back(this);

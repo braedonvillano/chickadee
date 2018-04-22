@@ -4,6 +4,7 @@
 #include "k-devices.hh"
 #include "k-vmiter.hh"
 #define INIT_PID 1
+#define WHEEL_SZ 10
 
 // kernel.cc
 //
@@ -14,6 +15,7 @@ int kdisplay;                   // type of display
 
 spinlock familial_lock;
 wait_queue waitq;
+wait_queue sleepq_wheel[WHEEL_SZ];
 
 static void kdisplay_ontick();
 static void process_setup(pid_t pid, const char* program_name);
@@ -37,9 +39,13 @@ void kernel_start(const char* command) {
     console_clear();
     kdisplay = KDISPLAY_MEMVIEWER;
 
-    // Set up process descriptors
+    // Set up process descriptors and waitqueues
     for (pid_t i = 0; i < NPROC; i++) {
         ptable[i] = nullptr;
+    }
+    waitq.q_.reset();
+    for (int j = 0; j < WHEEL_SZ; j++) {
+        sleepq_wheel[0].q_.reset();
     }
 
     // make the initial process
@@ -107,7 +113,6 @@ void process_setup(pid_t pid, const char* name) {
     assert(r >= 0);
     r = vmiter(p, ktext2pa(console)).map(ktext2pa(console), PTE_P | PTE_W | PTE_U);
     assert(r >= 0);
-    waitq.q_.reset();
 
     int cpu = pid % ncpu;
     cpus[cpu].runq_lock_.lock_noirq();
@@ -231,6 +236,14 @@ void print_waitq_(wait_queue& wq) {
 //    Canary check function ensures structs arent corrupted
 //    Waitpid helper to reap a process after exiting
 
+bool child_exists(proc* parent, proc* check) {
+    for (proc* p = parent->child_list.front(); p;
+          p = parent->child_list.next(p)) {
+        if (p == check) { return true; }
+    }
+    return false;
+}
+
 void wait_pid_cond(proc* parent, wpret* wpr, pid_t pid, int opts) {
     wpr->pid_c = E_CHILD; wpr->p = nullptr;
     wpr->block = false; wpr->exit = false;
@@ -251,7 +264,9 @@ void wait_pid_cond(proc* parent, wpret* wpr, pid_t pid, int opts) {
     familial_lock.unlock(irqsp);
 }
 
-wpret wait_pid_(pid_t pid, proc* parent, int opts) {
+
+
+wpret wait_pid(pid_t pid, proc* parent, int opts) {
     wpret wpr;
     waiter(parent).block_until(waitq, 
         [&] () { wait_pid_cond(parent, &wpr, pid, opts); return !wpr.block; });
@@ -264,7 +279,67 @@ wpret wait_pid_(pid_t pid, proc* parent, int opts) {
     return wpr;
 }
 
-wpret wait_pid(pid_t pid, proc* parent, int opts) {
+// wpret wait_pid(pid_t pid, proc* parent, int opts) {
+//     wpret wpr;
+//     wpr.pid_c = E_CHILD;
+//     wpr.block = false;
+//     waiter w(parent);
+//     while (1) {
+//         w.prepare(&waitq);
+//         auto irqsp = familial_lock.lock();
+//         // loop through processes and try to find a child
+//         proc* p = parent->child_list.front();
+//         if (!p) {
+//             familial_lock.unlock(irqsp);
+//             wpr.block = false;
+//             wpr.exit = false;
+//             break;
+//         }
+//         while (p) {
+//             if (!pid) {
+//                 if (p->state_ == proc::wexited) {
+//                     // we should not block and we should exit
+//                     wpr.block = false;
+//                     wpr.exit = true;
+//                     wpr.pid_c = p->pid_;
+//                     break;
+//                 }
+//                 // we should block unless nohang, and no exit
+//                 wpr.block = (bool) !opts;
+//                 wpr.exit = false;
+//                 wpr.pid_c = E_AGAIN;
+//                 break;
+//             }
+//             if (p->pid_ == pid) {
+//                 if (p->state_ == proc::wexited) {
+//                     // we should not block and we should exit
+//                     wpr.block = false;
+//                     wpr.exit = true;
+//                     wpr.pid_c = p->pid_;
+//                     break;
+//                 }
+//                 // we should block unless nohang, and no exit
+//                 wpr.block = (bool) !opts;
+//                 wpr.exit = false;
+//                 wpr.pid_c = E_AGAIN;
+//                 break;
+//             }
+//         }
+//         familial_lock.unlock(irqsp);
+//         if (!wpr.block) { break; }
+//         w.block();
+//     }
+//     w.clear();
+//     if (wpr.exit) { 
+//         auto irqs_ = familial_lock.lock();
+//         reap_child(wpr.p, &wpr); 
+//         kfree(wpr.p->pagetable_); kfree(wpr.p);
+//         familial_lock.unlock(irqs_);
+//     }
+//     return wpr;
+// }
+
+wpret wait_pid_(pid_t pid, proc* parent, int opts) {
     wpret wpr;
     bool wait = false;
     waiter w(parent);
@@ -377,15 +452,21 @@ void exit(proc* p, int flag, int exit_stat) {
     p->exit_status_ = exit_stat;
     if (!flag) { ptable[pid] = nullptr; }
     // reparent the process if it is actually exiting
+    auto irqsp = familial_lock.lock();
     if (flag) {
-        auto irqsp = familial_lock.lock();
         while (proc* p_ = p->child_list.pop_front()) {
             p_->ppid_ = INIT_PID;
             init_p->child_list.push_front(p_);
-        } 
-        familial_lock.unlock(irqsp);
+        }
+        waitq.wake_pid(p->ppid_);
+        proc* prt = ptable[p->ppid_];
+        if (prt && prt->sleepq_ >= 0) {
+            sleepq_wheel[prt->sleepq_].wake_pid(p->ppid_);
+            prt->sleepq_ = -1;
+        }
     }
-    waitq.wake_pid(p->ppid_);
+    familial_lock.unlock(irqsp);
+
     // free the process's memory 
     for (vmiter it(p); it.low(); it.next()) {
         if (it.user() && it.present() && it.pa() != ktext2pa(console)) { 
@@ -411,14 +492,19 @@ void reap_child(proc* p, wpret* wpr) {
 }
 
 void canary_check(proc* p) {
-    if (p) {
-        assert(p->canary_ == CANARY);
+    if (p) { 
+        assert(p->canary_ == CANARY); 
     }
     for (int i = 0; i < ncpu; ++i) {
         assert(cpus[i].canary_ == CANARY);
     }
 }
 
+// bool msleep_cond(proc* p, unsigned long want, int* res) {
+//     if (!(long(want - ticks) > 0)) { *res = 0; return true; }
+//     if (p->sleepq_ < 0) { *res = E_INTR; return true; }
+//     return false;
+// }
 
 // proc::syscall(regs)
 //    System call handler.
@@ -478,13 +564,38 @@ uintptr_t proc::syscall(regstate* regs) {
     }
 
     case SYSCALL_MSLEEP: {
-        unsigned long want_ticks = ticks + (regs->reg_rdi + 9) / 10;
-        sti();
-        while (long(want_ticks - ticks) > 0) {
-            this->yield();
+        int res;
+        waiter w(this);
+        unsigned long want = ticks + (regs->reg_rdi + 9) / 10;
+        int indx = sleepq_ = want % WHEEL_SZ; 
+        while (1) {
+            w.prepare(sleepq_wheel[indx]);
+            if (!(long(want - ticks) > 0)) { res = 0; break; }
+            if (sleepq_ < 0) { res = E_INTR; break; }
+            w.block();
         }
-        return 0;
+        w.clear();
+        return res;
     }
+
+    // case SYSCALL_MSLEEP: {
+    //     int res;
+    //     unsigned long want = ticks + (regs->reg_rdi + 9) / 10;
+    //     int indx = sleepq_ = want % WHEEL_SZ;
+    //     waiter(this).block_until(sleepq_wheel[indx], 
+    //         [&] () { return msleep_cond(this, want, &res); });
+
+    //     return res;
+    // }
+
+    // case SYSCALL_MSLEEP_PRIMARY: {
+    //     unsigned long want_ticks = ticks + (regs->reg_rdi + 9) / 10;
+    //     sti();
+    //     while (long(want_ticks - ticks) > 0) {
+    //         this->yield();
+    //     }
+    //     return 0;
+    // }
 
     case SYSCALL_GETPPID: {
         return ppid_;
