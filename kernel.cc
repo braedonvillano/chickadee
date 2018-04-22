@@ -257,7 +257,7 @@ void wait_pid_cond(proc* parent, wpret* wpr, pid_t pid, int opts) {
             }
         } else if (!pid || p->pid_ == pid) {
             wpr->block = (bool) !opts; 
-            if (opts) { wpr->pid_c = E_AGAIN; } break;
+            if (opts) { wpr->pid_c = E_AGAIN; }
         }
         p = parent->child_list.next(p);
     }
