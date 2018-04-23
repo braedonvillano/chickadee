@@ -200,8 +200,8 @@ void proc::exception(regstate* regs) {
 //    Waitpid helper to reap a process after exiting
 
 void wait_pid_cond(proc* parent, wpret* wpr, pid_t pid, int opts) {
-    wpr->pid_c = E_CHILD; wpr->p = nullptr;
     wpr->block = false; wpr->exit = false;
+    wpr->pid_c = E_CHILD; wpr->p = nullptr;
     auto irqsp = familial_lock.lock();
     proc* p = parent->child_list.front(); 
     if (!p) { familial_lock.unlock(irqsp); return; }
@@ -301,21 +301,19 @@ void exit(proc* p, int flag, int exit_stat) {
     proc* p_init = ptable[INIT_PID];
     p->state_ = proc::exited;
     p->exit_status_ = exit_stat;
-    // reparent the process if actual exit (not fork)
     if (!flag) { ptable[pid] = nullptr; }
-    
     // free the process's memory 
     for (vmiter it(p); it.low(); it.next()) {
         if (it.user() && it.present() && it.pa() != ktext2pa(console)) { 
             kfree((void*) it.ka());
         }
     }
-    // free the process's page tabeles
+    // free the process's page tabels
     for (ptiter it(p); it.low(); it.next()) {
         kfree((void*) pa2ka(it.ptp_pa()));
     }
     ptable_lock.unlock(irqs);
-    // reparent and wake sleeping parent
+    // reparent children and wake sleeping parent
     if (flag) { parenting(p, p_init); }
 }
 
@@ -352,15 +350,6 @@ void reap_child(proc* p, wpret* wpr) {
     ptable_lock.unlock(irqs);
 }
 
-void canary_check(proc* p) {
-    if (p) { 
-        assert(p->canary_ == CANARY); 
-    }
-    for (int i = 0; i < ncpu; ++i) {
-        assert(cpus[i].canary_ == CANARY);
-    }
-}
-
 bool msleep_cond(proc* p, unsigned long want, int* res) {
     if (!(long(want - ticks) > 0)) { *res = 0; return true; }
     auto irqs = familial_lock.lock();
@@ -371,6 +360,15 @@ bool msleep_cond(proc* p, unsigned long want, int* res) {
     }
     familial_lock.unlock(irqs);
     return false;
+}
+
+void canary_check(proc* p) {
+    if (p) { 
+        assert(p->canary_ == CANARY); 
+    }
+    for (int i = 0; i < ncpu; ++i) {
+        assert(cpus[i].canary_ == CANARY);
+    }
 }
 
 // proc::syscall(regs)
