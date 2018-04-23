@@ -24,9 +24,8 @@ static void canary_check(proc* p = nullptr);
 static void exit(proc* p, int flag, int exit_stat);
 static void init_reaper();
 static void reap_child(proc* p, wpret* wpr);
+static void parenting(proc* p, proc* p_init);
 static wpret wait_pid(pid_t pid, proc* parent, int opts = 0);
-
-static wpret wait_pid_(pid_t pid, proc* parent, int opts = 0);
 
 
 // kernel_start(command)
@@ -62,7 +61,6 @@ void kernel_start(const char* command) {
 void init_reaper(proc* p) {
     while (1) {
         wait_pid(0, p, W_NOHANG);
-        // p->yield();
     }
 }
 
@@ -194,55 +192,12 @@ void proc::exception(regstate* regs) {
     assert((regs->reg_cs & 3) == 0 || this->state_ == proc::runnable);
 }
 
-// the following functions can likely be deleted
-//     they need to be held with locks in most cases
-//     they are visual debugging functions to unfuck things
-
-void print_used_pids() {
-    log_printf("the following pids are taken:");
-    // go through ptable to find open proc
-    for (pid_t i = 1; i < NPROC; i++) {
-        if (ptable[i]) {
-            log_printf(" %d", ptable[i]->pid_);
-        }
-    }
-    log_printf("\n");
-}
-
-void print_runq__(proc* forked, proc* parent) {
-    int find = 0;
-    for (proc* p = this_cpu()->runq_.front(); p; p = this_cpu()->runq_.next(p)) {
-        if (p->pid_ == forked->pid_) {
-            find = p->pid_;
-        }
-    }
-    assert(find);
-}
-
-void print_waitq_(wait_queue& wq) {
-    log_printf("the things on the runq_ are: ");
-    auto irqs = wq.lock_.lock();
-    for (auto w = wq.q_.front(); w; w = wq.q_.next(w)) {
-       log_printf(" %d", w->p_->pid_);
-    }
-    wq.lock_.unlock(irqs);
-    log_printf("\n");
-}
-
 
 // syscall helper functions below
 //    Fork helper function to make process children
 //    Exit helper function that essentially clears processes
 //    Canary check function ensures structs arent corrupted
 //    Waitpid helper to reap a process after exiting
-
-bool child_exists(proc* parent, proc* check) {
-    for (proc* p = parent->child_list.front(); p;
-          p = parent->child_list.next(p)) {
-        if (p == check) { return true; }
-    }
-    return false;
-}
 
 void wait_pid_cond(proc* parent, wpret* wpr, pid_t pid, int opts) {
     wpr->pid_c = E_CHILD; wpr->p = nullptr;
@@ -263,9 +218,7 @@ void wait_pid_cond(proc* parent, wpret* wpr, pid_t pid, int opts) {
     }
     familial_lock.unlock(irqsp);
 }
-
-
-
+// these functions collab for waitpid, the condition (^) finds a child
 wpret wait_pid(pid_t pid, proc* parent, int opts) {
     wpret wpr;
     waiter(parent).block_until(waitq, 
@@ -275,109 +228,6 @@ wpret wait_pid(pid_t pid, proc* parent, int opts) {
         reap_child(wpr.p, &wpr); 
         familial_lock.unlock(irqs);
         kfree(wpr.p->pagetable_); kfree(wpr.p);        
-    }
-    return wpr;
-}
-
-// wpret wait_pid(pid_t pid, proc* parent, int opts) {
-//     wpret wpr;
-//     wpr.pid_c = E_CHILD;
-//     wpr.block = false;
-//     waiter w(parent);
-//     while (1) {
-//         w.prepare(&waitq);
-//         auto irqsp = familial_lock.lock();
-//         // loop through processes and try to find a child
-//         proc* p = parent->child_list.front();
-//         if (!p) {
-//             familial_lock.unlock(irqsp);
-//             wpr.block = false;
-//             wpr.exit = false;
-//             break;
-//         }
-//         while (p) {
-//             if (!pid) {
-//                 if (p->state_ == proc::wexited) {
-//                     // we should not block and we should exit
-//                     wpr.block = false;
-//                     wpr.exit = true;
-//                     wpr.pid_c = p->pid_;
-//                     break;
-//                 }
-//                 // we should block unless nohang, and no exit
-//                 wpr.block = (bool) !opts;
-//                 wpr.exit = false;
-//                 wpr.pid_c = E_AGAIN;
-//                 break;
-//             }
-//             if (p->pid_ == pid) {
-//                 if (p->state_ == proc::wexited) {
-//                     // we should not block and we should exit
-//                     wpr.block = false;
-//                     wpr.exit = true;
-//                     wpr.pid_c = p->pid_;
-//                     break;
-//                 }
-//                 // we should block unless nohang, and no exit
-//                 wpr.block = (bool) !opts;
-//                 wpr.exit = false;
-//                 wpr.pid_c = E_AGAIN;
-//                 break;
-//             }
-//         }
-//         familial_lock.unlock(irqsp);
-//         if (!wpr.block) { break; }
-//         w.block();
-//     }
-//     w.clear();
-//     if (wpr.exit) { 
-//         auto irqs_ = familial_lock.lock();
-//         reap_child(wpr.p, &wpr); 
-//         kfree(wpr.p->pagetable_); kfree(wpr.p);
-//         familial_lock.unlock(irqs_);
-//     }
-//     return wpr;
-// }
-
-wpret wait_pid_(pid_t pid, proc* parent, int opts) {
-    wpret wpr;
-    bool wait = false;
-    waiter w(parent);
-    while (1) {
-        auto irqsp = familial_lock.lock();
-        // check if the child list is empty
-        proc* p = parent->child_list.front();
-        if (!p) {
-            familial_lock.unlock(irqsp);
-            wpr.pid_c = E_CHILD;
-            return wpr;
-        }
-        // cycle through the list to find a child
-        while (p) {
-            if (!pid) {
-                if (p->state_ == proc::wexited) {
-                    reap_child(p, &wpr);
-                    familial_lock.unlock(irqsp);
-                    kfree(p->pagetable_); kfree(p);
-                    return wpr;
-                }
-                wait = true;
-            } else if (p->pid_ == pid) {
-                if (p->state_ == proc::wexited) {
-                    reap_child(p, &wpr);
-                    familial_lock.unlock(irqsp);
-                    kfree(p->pagetable_); kfree(p);
-                    return wpr;
-                }
-                wait = true;
-                break;
-            }
-            p = parent->child_list.next(p);
-        }
-        familial_lock.unlock(irqsp);
-        if (!wait) { wpr.pid_c = E_CHILD; break; }
-        if (opts) { wpr.pid_c = E_AGAIN; break; }
-        parent->yield();
     }
     return wpr;
 }
@@ -444,29 +294,16 @@ int fork(proc* parent, regstate* regs) {
     return pid;
 }
 
+// this cleans a proc, flag set if called from fork
 void exit(proc* p, int flag, int exit_stat) {
     auto irqs = ptable_lock.lock();
     pid_t pid = p->pid_;
-    proc* init_p = ptable[INIT_PID];
+    proc* p_init = ptable[INIT_PID];
     p->state_ = proc::exited;
     p->exit_status_ = exit_stat;
+    // reparent the process if actual exit (not fork)
     if (!flag) { ptable[pid] = nullptr; }
-    // reparent the process if it is actually exiting
-    auto irqsp = familial_lock.lock();
-    if (flag) {
-        while (proc* p_ = p->child_list.pop_front()) {
-            p_->ppid_ = INIT_PID;
-            init_p->child_list.push_front(p_);
-        }
-        waitq.wake_pid(p->ppid_);
-        proc* prt = ptable[p->ppid_];
-        if (prt && prt->sleepq_ >= 0) {
-            sleepq_wheel[prt->sleepq_].wake_pid(p->ppid_);
-            prt->sleepq_ = -1;
-        }
-    }
-    familial_lock.unlock(irqsp);
-
+    
     // free the process's memory 
     for (vmiter it(p); it.low(); it.next()) {
         if (it.user() && it.present() && it.pa() != ktext2pa(console)) { 
@@ -478,8 +315,25 @@ void exit(proc* p, int flag, int exit_stat) {
         kfree((void*) pa2ka(it.ptp_pa()));
     }
     ptable_lock.unlock(irqs);
+    // reparent and wake sleeping parent
+    if (flag) { parenting(p, p_init); }
 }
 
+void parenting(proc* p, proc* p_init) {
+    auto irqsp = familial_lock.lock();
+    while (proc* p_ = p->child_list.pop_front()) {
+        p_->ppid_ = INIT_PID;
+        p_init->child_list.push_front(p_);
+    }
+    waitq.wake_pid(p->ppid_);
+    proc* prt = ptable[p->ppid_];
+    int index = prt->sleepq_;
+    if (index >= 0) {
+        prt->sleepq_ = -1;
+        sleepq_wheel[index].wake_pid(p->ppid_);
+    }
+    familial_lock.unlock(irqsp);
+}
 
 void reap_child(proc* p, wpret* wpr) {
     auto irqs = ptable_lock.lock();
@@ -500,11 +354,17 @@ void canary_check(proc* p) {
     }
 }
 
-// bool msleep_cond(proc* p, unsigned long want, int* res) {
-//     if (!(long(want - ticks) > 0)) { *res = 0; return true; }
-//     if (p->sleepq_ < 0) { *res = E_INTR; return true; }
-//     return false;
-// }
+bool msleep_cond(proc* p, unsigned long want, int* res) {
+    if (!(long(want - ticks) > 0)) { *res = 0; return true; }
+    auto irqs = familial_lock.lock();
+    if (p->sleepq_ < 0) { 
+        familial_lock.unlock(irqs);
+        *res = E_INTR; 
+        return true; 
+    }
+    familial_lock.unlock(irqs);
+    return false;
+}
 
 // proc::syscall(regs)
 //    System call handler.
@@ -565,37 +425,13 @@ uintptr_t proc::syscall(regstate* regs) {
 
     case SYSCALL_MSLEEP: {
         int res;
-        waiter w(this);
         unsigned long want = ticks + (regs->reg_rdi + 9) / 10;
-        int indx = sleepq_ = want % WHEEL_SZ; 
-        while (1) {
-            w.prepare(sleepq_wheel[indx]);
-            if (!(long(want - ticks) > 0)) { res = 0; break; }
-            if (sleepq_ < 0) { res = E_INTR; break; }
-            w.block();
-        }
-        w.clear();
+        int indx = sleepq_ = want % WHEEL_SZ;
+        waiter(this).block_until(sleepq_wheel[indx], 
+            [&] () { return msleep_cond(this, want, &res); });
+
         return res;
     }
-
-    // case SYSCALL_MSLEEP: {
-    //     int res;
-    //     unsigned long want = ticks + (regs->reg_rdi + 9) / 10;
-    //     int indx = sleepq_ = want % WHEEL_SZ;
-    //     waiter(this).block_until(sleepq_wheel[indx], 
-    //         [&] () { return msleep_cond(this, want, &res); });
-
-    //     return res;
-    // }
-
-    // case SYSCALL_MSLEEP_PRIMARY: {
-    //     unsigned long want_ticks = ticks + (regs->reg_rdi + 9) / 10;
-    //     sti();
-    //     while (long(want_ticks - ticks) > 0) {
-    //         this->yield();
-    //     }
-    //     return 0;
-    // }
 
     case SYSCALL_GETPPID: {
         return ppid_;
@@ -709,6 +545,49 @@ uintptr_t proc::syscall(regstate* regs) {
         return E_NOSYS;
 
     }
+}
+
+// the following functions can likely be deleted
+//     they need to be held with locks in most cases
+//     they are visual debugging functions to unfuck things
+
+void print_used_pids() {
+    log_printf("the following pids are taken:");
+    // go through ptable to find open proc
+    for (pid_t i = 1; i < NPROC; i++) {
+        if (ptable[i]) {
+            log_printf(" %d", ptable[i]->pid_);
+        }
+    }
+    log_printf("\n");
+}
+
+void print_runq__(proc* forked, proc* parent) {
+    int find = 0;
+    for (proc* p = this_cpu()->runq_.front(); p; p = this_cpu()->runq_.next(p)) {
+        if (p->pid_ == forked->pid_) {
+            find = p->pid_;
+        }
+    }
+    assert(find);
+}
+
+void print_waitq_(wait_queue& wq) {
+    log_printf("the things on the runq_ are: ");
+    auto irqs = wq.lock_.lock();
+    for (auto w = wq.q_.front(); w; w = wq.q_.next(w)) {
+       log_printf(" %d", w->p_->pid_);
+    }
+    wq.lock_.unlock(irqs);
+    log_printf("\n");
+}
+
+bool child_exists(proc* parent, proc* check) {
+    for (proc* p = parent->child_list.front(); p;
+          p = parent->child_list.next(p)) {
+        if (p == check) { return true; }
+    }
+    return false;
 }
 
 
