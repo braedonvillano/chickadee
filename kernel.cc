@@ -193,7 +193,7 @@ void proc::exception(regstate* regs) {
 }
 
 
-// syscall helper functions below
+// below are the syscall main-wrapper functions
 //    Fork helper function to make process children
 //    Exit helper function that essentially clears processes
 //    Canary check function ensures structs arent corrupted
@@ -318,6 +318,13 @@ void exit(proc* p, int flag, int exit_stat) {
     // reparent and wake sleeping parent
     if (flag) { parenting(p, p_init); }
 }
+
+
+// helper functions to the main-wrapper syscall functions above
+//    reparenting: reparents a process and wakes a sleepq_
+//    reap_child: finishes the reaping process in waitpid
+//    msleep_cond: is the condition used in msleep's block_until
+//    any remaing should be self explanatory
 
 void parenting(proc* p, proc* p_init) {
     auto irqsp = familial_lock.lock();
@@ -546,6 +553,7 @@ uintptr_t proc::syscall(regstate* regs) {
 
     }
 }
+
 
 // the following functions can likely be deleted
 //     they need to be held with locks in most cases

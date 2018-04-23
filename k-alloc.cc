@@ -14,44 +14,24 @@
 
 static spinlock page_lock;
 static uintptr_t next_free_pa;
+static void print_struct(int info = 0);
 
-void print_struct();
-void print_struct_info();
 page pages[600];
-struct list<page, &page::link_> lists[10];
+list<page, &page::link_> lists[10];
+
+
+
+// kallocpage
+//    calls kalloc with a pagesize of one, and returns
 
 x86_64_page* kallocpage() {
-    // auto irqs = page_lock.lock();
-
-    // x86_64_page* p = nullptr;
-
-    // // skip over reserved and kernel memory
-    // auto range = physical_ranges.find(next_free_pa);
-    // while (range != physical_ranges.end()) {
-    //     if (range->type() == mem_available) {
-    //         // use this page
-    //         p = pa2ka<x86_64_page*>(next_free_pa);
-    //         next_free_pa += PAGESIZE;
-    //         break;
-    //     } else {
-    //         // move to next range
-    //         next_free_pa = range->last();
-    //         ++range;
-    //     }
-    // }
-
-    // page_lock.unlock(irqs);
-    // return p;
-
-    // void* ptr = kalloc(PAGESIZE);
-    // kfree(ptr);
-
     return reinterpret_cast<x86_64_page*>(kalloc(PAGESIZE));
 }
 
 // init_kalloc
 //    Initialize stuff needed by `kalloc`. Called from `init_hardware`,
 //    after `physical_ranges` is initialized.
+
 void init_kalloc() {
     auto irqs = page_lock.lock();
     // initialize the pages array
@@ -184,31 +164,24 @@ void kfree(void* ptr) {
 
 // test_kalloc
 //    Run unit tests on the kalloc system.
+
 void test_kalloc() {
     // do nothing for now
 }
 
-void print_struct_info() {
+// prints memory struct, set info flag to get page details
+void print_struct(int info) {
     for (int i = 0; i < 10; i++) {
-        log_printf("List %d:  ", i + 12);
-        page* next = lists[i].front();
-        while (next) {
-            log_printf("[p: %d o: %d f: %d]", next->pn, next->order, next->free);
+        log_printf("List %d:  ", i + MIN_ORD);
+        page* n = lists[i].front();
+        while (n) {
+            if (info) {
+                log_printf("[p: %d o: %d f: %d]", n->pn, n->order, n->free);
+            } else {
+                log_printf("[x]", n->pn, n->order, n->free);
+            }
             log_printf(" -> ");
-            next = lists[i].next(next);
-        }
-        log_printf("null\n");
-    }
-}
-
-void print_struct() {
-    for (int i = 0; i < 10; i++) {
-        log_printf("List %d:  ", i + 12);
-        page* next = lists[i].front();
-        while (next) {
-            log_printf("[x]", next->pn, next->order, next->free);
-            log_printf(" -> ");
-            next = lists[i].next(next);
+            n = lists[i].next(n);
         }
         log_printf("null\n");
     }
