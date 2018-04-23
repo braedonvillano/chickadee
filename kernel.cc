@@ -294,7 +294,7 @@ int fork(proc* parent, regstate* regs) {
     return pid;
 }
 
-// this cleans a proc, flag set if called from fork
+// this cleans a proc, flag not set if called from fork
 void exit(proc* p, int flag, int exit_stat) {
     auto irqs = ptable_lock.lock();
     pid_t pid = p->pid_;
