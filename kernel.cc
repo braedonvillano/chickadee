@@ -473,6 +473,11 @@ uintptr_t proc::syscall(regstate* regs) {
         uintptr_t addr = regs->reg_rsi;
         size_t sz = regs->reg_rdx;
 
+        if (!sz) return 0;
+        if (!vmiter(this, addr).perm_range(PTE_P | PTE_W | PTE_U, sz)) {
+            return E_FAULT;
+        }
+
         auto& kbd = keyboardstate::get();
         auto irqs = kbd.lock_.lock();
 
@@ -512,6 +517,11 @@ uintptr_t proc::syscall(regstate* regs) {
         int fd = regs->reg_rdi;
         uintptr_t addr = regs->reg_rsi;
         size_t sz = regs->reg_rdx;
+
+        if (!sz) return 0;
+        if (!vmiter(this, addr).perm_range(PTE_P | PTE_U, sz)) {
+            return E_FAULT;
+        }
 
         auto& csl = consolestate::get();
         auto irqs = csl.lock_.lock();

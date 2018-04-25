@@ -11,7 +11,6 @@ void process_main() {
     ssize_t r = sys_read(0, buf, sizeof(buf));
     assert_gt(r, 0);
 
-
     // check invalid addresses
     w = sys_write(1, reinterpret_cast<const char*>(0x40000000UL), 0);
     assert_eq(w, 0);
@@ -27,7 +26,6 @@ void process_main() {
 
     w = sys_write(1, reinterpret_cast<const char*>(read_rbp()), 16384);
     assert_eq(w, E_FAULT);
-
 
     r = sys_read(0, reinterpret_cast<char*>(0x40000000UL), 0);
     assert_eq(r, 0);
