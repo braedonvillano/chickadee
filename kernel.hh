@@ -6,7 +6,7 @@
 #include "k-list.hh"
 #include "k-lock.hh"
 #include "k-memrange.hh"
-#include "k-list.hh"
+#include "k-vfs.hh"
 #if CHICKADEE_PROCESS
 #error "kernel.hh should not be used by process code."
 #endif
@@ -26,9 +26,7 @@ struct wpret {
     bool block;
     pid_t pid_c;
     wpret() : p(nullptr), stat(0), exit(false), 
-    block(false), pid_c(E_CHILD) {}
-    // exit(false), pid_c(E_CHILD),
-    // block(false), p(nullptr)
+    block(false), pid_c(E_CHILD) {};
 };
 
 // used for buddy allocators and pages array
@@ -39,6 +37,7 @@ struct page {
     bool block;                        // true <-> start of block
     list_links link_;
 };
+
 
 // Process descriptor type
 struct __attribute__((aligned(4096))) proc {
@@ -56,13 +55,15 @@ struct __attribute__((aligned(4096))) proc {
     };
     state_t state_;                    // process state
     x86_64_pagetable* pagetable_;      // process's page table
+
     int cpu_;
     int sleepq_;
     int sleepq__;
     int exit_status_;
 
-    list_links runq_links_;
+    fdtable* fdtable_;                  // a pointer to the fdtable
 
+    list_links runq_links_;
     list_links child_links_;            // link for child pids
 
     list<proc, &proc::child_links_> child_list;
@@ -73,7 +74,7 @@ struct __attribute__((aligned(4096))) proc {
     inline bool contains(uintptr_t addr) const;
     inline bool contains(void* ptr) const;
 
-    void init_user(pid_t pid, x86_64_pagetable* pt);
+    void init_user(pid_t pid, x86_64_pagetable* pt, fdtable* fdt = nullptr);
     void init_kernel(pid_t pid, void (*f)(proc*));
 
     struct loader {
@@ -112,7 +113,6 @@ extern spinlock familial_lock;
 
 // allocate a new `proc` and call its constructor
 proc* kalloc_proc() __attribute__((malloc));
-
 
 // CPU state type
 struct __attribute__((aligned(4096))) cpustate {

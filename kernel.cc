@@ -21,7 +21,7 @@ static void kdisplay_ontick();
 static void process_setup(pid_t pid, const char* program_name);
 static void build_init_proc();
 static void canary_check(proc* p = nullptr);
-static void exit(proc* p, int flag, int exit_stat);
+static void exit(proc* p, int exit_stat, int flag = 0);
 static void init_reaper();
 static void reap_child(proc* p, wpret* wpr);
 static void parenting(proc* p, proc* p_init);
@@ -31,6 +31,8 @@ static wpret wait_pid(pid_t pid, proc* parent, int opts = 0);
 // kernel_start(command)
 //    Initialize the hardware and processes and start running. The `command`
 //    string is an optional string passed from the boot loader.
+
+// &vnode_ioe::v_ioe;
 
 void kernel_start(const char* command) {
     assert(read_rbp() % 16 == 0);
@@ -92,8 +94,15 @@ void process_setup(pid_t pid, const char* name) {
     assert(!ptable[pid]);
     proc* p = ptable[pid] = kalloc_proc();
     x86_64_pagetable* npt = kalloc_pagetable();
-    assert(p && npt);
-    p->init_user(pid, npt);
+    fdtable* fdt = kalloc_fdtable();
+    file* file_ = kalloc_file();
+    assert(p && npt && file_);
+    p->init_user(pid, npt, fdt);
+
+    file_->vnode_ = &vnode_ioe::v_ioe;
+    p->fdtable_->table_[0] = file_;
+    p->fdtable_->table_[1] = file_;
+    p->fdtable_->table_[2] = file_;
 
     familial_lock.lock_noirq();
     p->ppid_ = INIT_PID;
@@ -244,33 +253,34 @@ int fork(proc* parent, regstate* regs) {
     }
     p = ptable[pid] = reinterpret_cast<proc*>(kallocpage());
     x86_64_pagetable* npt = kalloc_pagetable();
-    // if there were no empty processes
-    if (!pid || !p || !npt) {
+    fdtable* fdt = kalloc_fdtable();
+    // if no available procs or no memory
+    if (!pid || !p || !npt || !fdt) {
         ptable[pid] = nullptr;
         ptable_lock.unlock(irqs);
-        kfree(p); kfree(npt);
+        kfree(p); kfree(npt); kfree(fdt);
         return -1;
     }    
-    p->init_user(pid, npt);
+    p->init_user(pid, npt, fdt);
     ptable_lock.unlock(irqs);
     // loop through virtual memory and copy to child
     for (vmiter it(parent); it.low(); it.next()) {
         if (!it.user() || !it.present()) continue;
         if (it.pa() == ktext2pa(console)) {
             if (vmiter(p, it.va()).map(ktext2pa(console)) < 0) {
-                exit(p, 0, -1); kfree(p); kfree(npt);
+                exit(p, -1); kfree(p); kfree(npt);
                 return -1;
             }
             continue;
         }
         x86_64_page* pg = kallocpage();
         if (!pg) {
-            exit(p, 0, -1); kfree(p); kfree(npt); kfree(pg); 
+            exit(p, -1); kfree(p); kfree(npt); kfree(pg); 
             return -1;
         }
         memcpy(pg, (void*) it.ka(), PAGESIZE);
         if (vmiter(p, it.va()).map(ka2pa(pg), it.perm()) < 0) {
-            exit(p, 0, -1); kfree(p); kfree(npt); kfree(pg); 
+            exit(p, -1); kfree(p); kfree(npt); kfree(pg); 
             return -1;
         }
     }
@@ -295,7 +305,7 @@ int fork(proc* parent, regstate* regs) {
 }
 
 // this cleans a proc, flag not set if called from fork
-void exit(proc* p, int flag, int exit_stat) {
+void exit(proc* p, int exit_stat, int flag) {
     auto irqs = ptable_lock.lock();
     pid_t pid = p->pid_;
     proc* p_init = ptable[INIT_PID];
@@ -308,6 +318,13 @@ void exit(proc* p, int flag, int exit_stat) {
             kfree((void*) it.ka());
         }
     }
+    // MAKE SURE THAT WE CAN FREE THIS AFTER FREEING VIRTUAL MEMORY!!!
+    // if (p && p->fdtable_) {
+    //     kfree(p->fdtable_->table_[0]);
+    //     kfree(p->fdtable_->table_[1]);
+    //     kfree(p->fdtable_->table_[2]);
+    // }
+    kfree(p->fdtable_);
     // free the process's page tabels
     for (ptiter it(p); it.low(); it.next()) {
         kfree((void*) pa2ka(it.ptp_pa()));
@@ -424,7 +441,7 @@ uintptr_t proc::syscall(regstate* regs) {
     }
 
     case SYSCALL_EXIT: {
-        exit(this, 1, regs->reg_rdi);
+        exit(this, regs->reg_rdi, 1);
         this->yield_noreturn();
     }
 
@@ -486,7 +503,7 @@ uintptr_t proc::syscall(regstate* regs) {
         if (kbd.state_ == kbd.boot) {
             kbd.state_ = kbd.input;
         }
-
+        
         // block until a line is available
         waiter(this).block_until(kbd.wq_, [&] () {
                 return sz == 0 || kbd.eol_ != 0;

@@ -33,12 +33,79 @@ proc* kalloc_proc() {
     }
 }
 
+file* kalloc_file() {
+    return knew<file>();
+}
+
+fdtable* kalloc_fdtable() {
+    fdtable* ptr = knew<fdtable>();
+    if (ptr) {
+        for (int i = 0; i < NFDS; i++) {
+            ptr->table_[i] = nullptr;
+        }
+    }
+    return ptr;
+}
+
+// fdtable* kalloc_fdtable() {
+//     fdtable* fd_ptr;
+//     void* ptr = nullptr;
+//     if (sizeof(fdtable) <= PAGESIZE) {
+//         ptr = kallocpage();
+//     } else {
+//         ptr = kalloc(sizeof(fdtable));
+//     }
+//     if (ptr) {
+//         fd_ptr = new (ptr) fdtable;
+//     } else {
+//         // log_printf("fdtable allocation failed\n");
+//         return nullptr;
+//     }
+  
+
+//     for (int i = 0; i < NFDS; i++) {
+//         fd_ptr->table_[i] = nullptr;
+//     }
+//     return fd_ptr;
+// }
+
+  // file* file_ = kalloc_file();
+    // if (!file_) {
+    //     kfree(file_);
+    //     kfree(fd_ptr);
+    //     return nullptr;
+    // }
+    // file_->vnode_ = &v_ioe;
+    // fd_ptr->table_[0] = file_;
+    // fd_ptr->table_[1] = file_;
+    // fd_ptr->table_[2] = file_;
+
+
+
+// fdtable* kalloc_fdtable() {
+//     fdtable* ptr;
+//     // void* ptr = nullptr;
+//     if (sizeof(fdtable) <= PAGESIZE) {
+//         ptr = (fdtable*) kallocpage();
+//     } else {
+//         ptr = (fdtable*) kalloc(sizeof(fdtable));
+//     }
+//     if (!ptr) {
+//         log_printf("fdtable allocation failed\n");
+//         return nullptr;
+//     }
+//     for (int i = 0; i < NFDS; i++) {
+//         ptr->table_[i] = nullptr;
+//     }
+//     return (fdtable*) ptr;
+// }
+
 
 // proc::init_user(pid, pt)
 //    Initialize this `proc` as a new runnable user process with PID `pid`
 //    and initial page table `pt`.
 
-void proc::init_user(pid_t pid, x86_64_pagetable* pt) {
+void proc::init_user(pid_t pid, x86_64_pagetable* pt, fdtable* fdt) {
     uintptr_t addr = reinterpret_cast<uintptr_t>(this);
     assert(!(addr & PAGEOFFMASK));
     // ensure layout `k-exception.S` expects
@@ -70,6 +137,8 @@ void proc::init_user(pid_t pid, x86_64_pagetable* pt) {
     runq_links_.reset();
 
     pagetable_ = pt;
+
+    fdtable_ = fdt;
 
     canary_ = CANARY;
 }
