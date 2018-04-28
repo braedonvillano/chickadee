@@ -25,8 +25,18 @@ struct wpret {
     bool exit;
     bool block;
     pid_t pid_c;
+
     wpret() : p(nullptr), stat(0), exit(false), 
     block(false), pid_c(E_CHILD) {};
+    
+    inline void clear();
+};
+
+inline void wpret::clear() {
+    block = false; 
+    exit = false;
+    p = nullptr;
+    pid_c = E_CHILD;
 };
 
 // used for buddy allocators and pages array
@@ -55,18 +65,17 @@ struct __attribute__((aligned(4096))) proc {
     };
     state_t state_;                    // process state
     x86_64_pagetable* pagetable_;      // process's page table
+    fdtable* fdtable_;                 // a pointer to the fdtable
 
     int cpu_;
     int sleepq_;
-    int sleepq__;
-    int exit_status_;
-
-    fdtable* fdtable_;                  // a pointer to the fdtable
+    int exit_status_; 
 
     list_links runq_links_;
     list_links child_links_;            // link for child pids
 
     list<proc, &proc::child_links_> child_list;
+
 
     proc();
     NO_COPY_OR_ASSIGN(proc);
@@ -74,7 +83,7 @@ struct __attribute__((aligned(4096))) proc {
     inline bool contains(uintptr_t addr) const;
     inline bool contains(void* ptr) const;
 
-    void init_user(pid_t pid, x86_64_pagetable* pt, fdtable* fdt = nullptr);
+    void init_user(pid_t pid, x86_64_pagetable* pt, fdtable* fdt);
     void init_kernel(pid_t pid, void (*f)(proc*));
 
     struct loader {

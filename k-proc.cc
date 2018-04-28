@@ -133,6 +133,8 @@ void proc::init_user(pid_t pid, x86_64_pagetable* pt, fdtable* fdt) {
     state_ = proc::runnable;
 
     cpu_ = -1;
+    sleepq_ = -1;
+    exit_status_ = -1;
 
     runq_links_.reset();
 

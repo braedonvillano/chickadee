@@ -4,15 +4,47 @@
 
 vnode_ioe vnode_ioe::v_ioe;
 
+void file::adref() {
+	// auto irqs = lock_.lock();
+	refs_++;
+	// lock_.unlock(irqs);
+}
+
+void file::deref() {
+	auto irqs = lock_.lock();
+	refs_--;
+	if (!refs_) {
+		log_printf("the struct has no more references, we should free\n");
+		vnode_->deref();
+		kfree(this);
+	}
+	lock_.unlock(irqs);
+}
+
+void vnode::adref() {
+	// auto irqs = lock_.lock();
+	refs_++;
+	// lock_.unlock(irqs);
+}
+
+void vnode::deref() {
+	auto irqs = lock_.lock();
+	refs_--;
+	if (!refs_) {
+		kfree(this);
+	}
+	lock_.unlock(irqs);
+}
+
 // function definition for keyboard/console vnode subclass
 //		read/write do not need a buffer b/c the data inputted
 // 		and read is consumed immediatly, these resemble the originals
 
-size_t vnode::read(uintptr_t buf, size_t sz, size_t& off) {
+size_t vnode::read(uintptr_t buf, size_t sz, off_t& off) {
 	return 0;
 };
 
-size_t vnode::write(uintptr_t buf, size_t sz, size_t& off) {
+size_t vnode::write(uintptr_t buf, size_t sz, off_t& off) {
 	return 0;
 };
 
@@ -21,7 +53,14 @@ size_t vnode::write(uintptr_t buf, size_t sz, size_t& off) {
 //		read/write do not need a buffer b/c the data inputted
 // 		and read is consumed immediatly, these resemble the originals
 
-size_t vnode_ioe::read(uintptr_t buf, size_t sz, size_t& off) {
+void vnode_ioe::deref() {
+	auto irqs = lock_.lock();
+	refs_--;
+	assert(refs_ >= 0);
+	lock_.unlock(irqs);
+}
+
+size_t vnode_ioe::read(uintptr_t buf, size_t sz, off_t& off) {
 	auto& kbd = keyboardstate::get();
     auto irqs = kbd.lock_.lock();
 
@@ -59,7 +98,7 @@ size_t vnode_ioe::read(uintptr_t buf, size_t sz, size_t& off) {
     // return 0;
 }
 
-size_t vnode_ioe::write(uintptr_t buf, size_t sz, size_t& off) {
+size_t vnode_ioe::write(uintptr_t buf, size_t sz, off_t& off) {
 	auto& csl = consolestate::get();
     auto irqs = csl.lock_.lock();
 

@@ -96,20 +96,23 @@ void process_setup(pid_t pid, const char* name) {
     x86_64_pagetable* npt = kalloc_pagetable();
     fdtable* fdt = kalloc_fdtable();
     file* file_ = kalloc_file();
-    assert(p && npt && file_);
+    assert(p && npt && file_ && fdt);
     p->init_user(pid, npt, fdt);
 
+    file_->type_ = file::stream;
     file_->vnode_ = &vnode_ioe::v_ioe;
     p->fdtable_->table_[0] = file_;
+    file_->adref();
     p->fdtable_->table_[1] = file_;
+    file_->adref();
     p->fdtable_->table_[2] = file_;
 
-    familial_lock.lock_noirq();
+    auto irqsf = familial_lock.lock();
     p->ppid_ = INIT_PID;
     p->child_links_.reset();
     ptable[INIT_PID]->child_list.push_front(p);
     p->child_list.reset();
-    familial_lock.unlock_noirq();
+    familial_lock.unlock(irqsf);
 
     int r = p->load(name);
     assert(r >= 0);
@@ -209,8 +212,7 @@ void proc::exception(regstate* regs) {
 //    Waitpid helper to reap a process after exiting
 
 void wait_pid_cond(proc* parent, wpret* wpr, pid_t pid, int opts) {
-    wpr->block = false; wpr->exit = false;
-    wpr->pid_c = E_CHILD; wpr->p = nullptr;
+    wpr->clear();
     auto irqsp = familial_lock.lock();
     proc* p = parent->child_list.front(); 
     if (!p) { familial_lock.unlock(irqsp); return; }
@@ -263,6 +265,20 @@ int fork(proc* parent, regstate* regs) {
     }    
     p->init_user(pid, npt, fdt);
     ptable_lock.unlock(irqs);
+
+
+    // set up child fdtable
+    // auto irqsf = p->fdtable_->lock_.lock();
+    for (int j = 0; j < NFDS; j++) {
+        file* ptr = parent->fdtable_->table_[j];
+        if (ptr) {
+            ptr->adref();
+            p->fdtable_->table_[j] = ptr;
+            // log_printf("in child: %d, file_ ref count: %d\n", p->pid_, ptr->refs_);
+        }
+    }
+    // p->fdtable_->lock_.unlock(irqsf);
+
     // loop through virtual memory and copy to child
     for (vmiter it(parent); it.low(); it.next()) {
         if (!it.user() || !it.present()) continue;
@@ -318,20 +334,28 @@ void exit(proc* p, int exit_stat, int flag) {
             kfree((void*) it.ka());
         }
     }
-    // MAKE SURE THAT WE CAN FREE THIS AFTER FREEING VIRTUAL MEMORY!!!
-    // if (p && p->fdtable_) {
-    //     kfree(p->fdtable_->table_[0]);
-    //     kfree(p->fdtable_->table_[1]);
-    //     kfree(p->fdtable_->table_[2]);
-    // }
-    kfree(p->fdtable_);
+    
     // free the process's page tabels
     for (ptiter it(p); it.low(); it.next()) {
         kfree((void*) pa2ka(it.ptp_pa()));
     }
-    ptable_lock.unlock(irqs);
     // reparent children and wake sleeping parent
     if (flag) { parenting(p, p_init); }
+
+    ptable_lock.unlock(irqs);
+
+    log_printf("pid: %d is exiting\n", p->pid_);
+
+    // clean up procs fdtable
+    // auto irqsf = p->fdtable_->lock_.lock();
+    for (int i = 0; i < NFDS; i++) {
+        file* ptr = p->fdtable_->table_[i];
+        if (ptr) { ptr->deref(); }
+    }
+    // p->fdtable_->lock_.unlock(irqsf);
+    kfree(p->fdtable_);
+
+
 }
 
 
@@ -495,38 +519,57 @@ uintptr_t proc::syscall(regstate* regs) {
             return E_FAULT;
         }
 
-        auto& kbd = keyboardstate::get();
-        auto irqs = kbd.lock_.lock();
+        fdtable* fdt = this->fdtable_;
+        auto irqsf = fdt->lock_.lock();
+        file* fl = fdt->table_[fd];
+        fl->lock_.lock_noirq();
+        fdt->lock_.unlock_noirq();
+        fl->refs_++;
+        fl->lock_.unlock(irqsf);
 
-        // mark that we are now reading from the keyboard
-        // (so `q` should not power off)
-        if (kbd.state_ == kbd.boot) {
-            kbd.state_ = kbd.input;
-        }
+        // make read call
+        size_t n = fl->vnode_->read(addr, sz, fl->off_);
+
+        fl->deref();
+
         
-        // block until a line is available
-        waiter(this).block_until(kbd.wq_, [&] () {
-                return sz == 0 || kbd.eol_ != 0;
-            }, kbd.lock_, irqs);
 
-        // read that line or lines
-        size_t n = 0;
-        while (kbd.eol_ != 0 && n < sz) {
-            if (kbd.buf_[kbd.pos_] == 0x04) {
-                // Ctrl-D means EOF
-                if (n == 0) {
-                    kbd.consume(1);
-                }
-                break;
-            } else {
-                *reinterpret_cast<char*>(addr) = kbd.buf_[kbd.pos_];
-                ++addr;
-                ++n;
-                kbd.consume(1);
-            }
-        }
 
-        kbd.lock_.unlock(irqs);
+
+
+
+        // auto& kbd = keyboardstate::get();
+        // auto irqs = kbd.lock_.lock();
+
+        // // mark that we are now reading from the keyboard
+        // // (so `q` should not power off)
+        // if (kbd.state_ == kbd.boot) {
+        //     kbd.state_ = kbd.input;
+        // }
+        
+        // // block until a line is available
+        // waiter(this).block_until(kbd.wq_, [&] () {
+        //         return sz == 0 || kbd.eol_ != 0;
+        //     }, kbd.lock_, irqs);
+
+        // // read that line or lines
+        // size_t n = 0;
+        // while (kbd.eol_ != 0 && n < sz) {
+        //     if (kbd.buf_[kbd.pos_] == 0x04) {
+        //         // Ctrl-D means EOF
+        //         if (n == 0) {
+        //             kbd.consume(1);
+        //         }
+        //         break;
+        //     } else {
+        //         *reinterpret_cast<char*>(addr) = kbd.buf_[kbd.pos_];
+        //         ++addr;
+        //         ++n;
+        //         kbd.consume(1);
+        //     }
+        // }
+
+        // kbd.lock_.unlock(irqs);
         return n;
     }
 
@@ -540,18 +583,31 @@ uintptr_t proc::syscall(regstate* regs) {
             return E_FAULT;
         }
 
-        auto& csl = consolestate::get();
-        auto irqs = csl.lock_.lock();
+        fdtable* fdt = this->fdtable_;
+        auto irqsf = fdt->lock_.lock();
+        file* fl = fdt->table_[fd];
+        fl->lock_.lock_noirq();
+        fdt->lock_.unlock_noirq();
+        fl->refs_++;
+        fl->lock_.unlock(irqsf);
 
-        size_t n = 0;
-        while (n < sz) {
-            int ch = *reinterpret_cast<const char*>(addr);
-            ++addr;
-            ++n;
-            console_printf(0x0F00, "%c", ch);
-        }
+        // make read call
+        size_t n = fl->vnode_->write(addr, sz, fl->off_);
 
-        csl.lock_.unlock(irqs);
+        fl->deref();
+
+        // auto& csl = consolestate::get();
+        // auto irqs = csl.lock_.lock();
+
+        // size_t n = 0;
+        // while (n < sz) {
+        //     int ch = *reinterpret_cast<const char*>(addr);
+        //     ++addr;
+        //     ++n;
+        //     console_printf(0x0F00, "%c", ch);
+        // }
+
+        // csl.lock_.unlock(irqs);
         return n;
     }
 
@@ -582,11 +638,10 @@ uintptr_t proc::syscall(regstate* regs) {
 
 // the following functions can likely be deleted
 //     they need to be held with locks in most cases
-//     they are visual debugging functions to unfuck things
+//     they are visual-ish debugging functions to unfuck things
 
 void print_used_pids() {
     log_printf("the following pids are taken:");
-    // go through ptable to find open proc
     for (pid_t i = 1; i < NPROC; i++) {
         if (ptable[i]) {
             log_printf(" %d", ptable[i]->pid_);
