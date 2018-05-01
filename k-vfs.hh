@@ -1,10 +1,14 @@
 #ifndef CHICKADEE_K_VFS_HH
 #define CHICKADEE_K_VFS_HH
-#define NFDS 256
+#include "k-wait.hh"
+#include "k-devices.hh"
+#define NFDS   256
+#define BUFSZ  16
 
 struct fdtable;
 struct file;
 struct vnode;
+struct bbuffer;
 
 // we are going to write some sort of constructor
 struct fdtable {
@@ -28,8 +32,8 @@ struct file {
 	enum type_t { normal = 0, pipe, stream };
     type_t type_; 
 
-    const bool pread_;
-    const bool pwrite_;
+    bool pread_;
+    bool pwrite_;
 
     vnode* vnode_;
 
@@ -45,41 +49,70 @@ struct file {
 file* kalloc_file() __attribute__((malloc));
 
 struct vnode {
-	vnode() : pseek_(false), refs_(1) {
+	vnode() : pseek_(false), readers_(1), writers_(1), bb_(nullptr), refs_(1) {
 		lock_.clear();
 	};
 
-	const char* filename_;
-	const bool pseek_;
+	char* filename_;
+	bool pseek_;
+
+	int readers_;
+    int writers_;
+
+    wait_queue wq_;
+
+    bbuffer* bb_;
 
 	spinlock lock_;      // protects the refs below
 	int refs_;
 
 	void adref();
     virtual void deref();
+    void deref(bool flag);
 
-	virtual size_t read(uintptr_t buf, size_t sz, off_t& off);
-	virtual size_t write(uintptr_t buf, size_t sz, off_t& off);
+	virtual size_t read(uintptr_t buf, size_t sz, off_t& off, file* fl);
+	virtual size_t write(uintptr_t buf, size_t sz, off_t& off, file* fl);
 };
 
 // vnode subclass for standard - (in, out, err)
 struct vnode_ioe : vnode {
-	const char* filename = "keyboard/console";
+	const char* filename_ = "keyboard/console";
 
 	void deref() override;
 
-	size_t read(uintptr_t buf, size_t sz, off_t& off) override;
-	size_t write(uintptr_t buf, size_t sz, off_t& off) override;
+	size_t read(uintptr_t buf, size_t sz, off_t& off, file* fl) override;
+	size_t write(uintptr_t buf, size_t sz, off_t& off, file* fl) override;
 
 	static vnode_ioe v_ioe;
 };
 
 // vnode subclass for pipes
 struct vnode_pipe : vnode {
-	const char* filename = "pipes";
+	const char* filename_ = "pipe";
 
-	size_t read(uintptr_t buf, size_t sz, off_t& off) override;
-	size_t write(uintptr_t buf, size_t sz, off_t& off) override;
+	size_t read(uintptr_t buf, size_t sz, off_t& off, file* fl) override;
+	size_t write(uintptr_t buf, size_t sz, off_t& off, file* fl) override;
+};
+
+struct vnode_memfile : vnode {
+    vnode_memfile(memfile* m) : m_(m) { filename_ = m->name_; }
+
+	size_t read(uintptr_t buf, size_t sz, off_t& off, file* fl) override;
+	size_t write(uintptr_t buf, size_t sz, off_t& off, file* fl) override;
+
+    private:
+        memfile* m_;
+};
+ 
+struct bbuffer {
+    bbuffer() : pos_(0), len_(0) {};
+
+    spinlock lock_;
+    char buf_[BUFSZ];
+    size_t pos_;
+    size_t len_;
+
+
 };
 
 #endif

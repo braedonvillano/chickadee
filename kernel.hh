@@ -6,7 +6,7 @@
 #include "k-list.hh"
 #include "k-lock.hh"
 #include "k-memrange.hh"
-#include "k-vfs.hh"
+// #include "k-vfs.hh"
 #if CHICKADEE_PROCESS
 #error "kernel.hh should not be used by process code."
 #endif
@@ -14,6 +14,8 @@ struct elf_program;
 struct proc;
 struct yieldstate;
 struct page;
+struct fdtable;
+struct file;
 
 // kernel.hh
 //

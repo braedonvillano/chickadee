@@ -1,5 +1,6 @@
 #include "kernel.hh"
 #include "k-vmiter.hh"
+#include "k-vfs.hh"
 
 class memusage {
   public:

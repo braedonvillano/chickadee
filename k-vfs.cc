@@ -5,17 +5,20 @@
 vnode_ioe vnode_ioe::v_ioe;
 
 void file::adref() {
-	// auto irqs = lock_.lock();
+	auto irqs = lock_.lock();
 	refs_++;
-	// lock_.unlock(irqs);
+	lock_.unlock(irqs);
 }
 
 void file::deref() {
 	auto irqs = lock_.lock();
 	refs_--;
 	if (!refs_) {
-		log_printf("the struct has no more references, we should free\n");
-		vnode_->deref();
+        if (type_ == file::pipe) {
+            vnode_->deref(pwrite_);
+        } else {
+            vnode_->deref();
+        }
 		kfree(this);
 	}
 	lock_.unlock(irqs);
@@ -31,20 +34,40 @@ void vnode::deref() {
 	auto irqs = lock_.lock();
 	refs_--;
 	if (!refs_) {
+        kfree(bb_);
 		kfree(this);
 	}
 	lock_.unlock(irqs);
+}
+
+void vnode::deref(bool flag) {
+    auto irqs = lock_.lock();
+    if (flag) {
+        writers_--;
+    } else {
+        readers_--;
+    }
+    if (!writers_ || !readers_) {
+        wq_.wake_all();
+    }
+    refs_--; 
+    if (!refs_) {
+        kfree(bb_);
+		kfree(this);
+	}
+	lock_.unlock(irqs);
+
 }
 
 // function definition for keyboard/console vnode subclass
 //		read/write do not need a buffer b/c the data inputted
 // 		and read is consumed immediatly, these resemble the originals
 
-size_t vnode::read(uintptr_t buf, size_t sz, off_t& off) {
+size_t vnode::read(uintptr_t buf, size_t sz, off_t& off, file* fl) {
 	return 0;
 };
 
-size_t vnode::write(uintptr_t buf, size_t sz, off_t& off) {
+size_t vnode::write(uintptr_t buf, size_t sz, off_t& off, file* fl) {
 	return 0;
 };
 
@@ -60,7 +83,7 @@ void vnode_ioe::deref() {
 	lock_.unlock(irqs);
 }
 
-size_t vnode_ioe::read(uintptr_t buf, size_t sz, off_t& off) {
+size_t vnode_ioe::read(uintptr_t buf, size_t sz, off_t& off, file* fl) {
 	auto& kbd = keyboardstate::get();
     auto irqs = kbd.lock_.lock();
 
@@ -94,11 +117,9 @@ size_t vnode_ioe::read(uintptr_t buf, size_t sz, off_t& off) {
 
     kbd.lock_.unlock(irqs);
     return n;
-
-    // return 0;
 }
 
-size_t vnode_ioe::write(uintptr_t buf, size_t sz, off_t& off) {
+size_t vnode_ioe::write(uintptr_t buf, size_t sz, off_t& off, file* fl) {
 	auto& csl = consolestate::get();
     auto irqs = csl.lock_.lock();
 
@@ -112,8 +133,72 @@ size_t vnode_ioe::write(uintptr_t buf, size_t sz, off_t& off) {
 
     csl.lock_.unlock(irqs);
     return n;
+}
 
-	// return 0;
+size_t vnode_pipe::read(uintptr_t buf, size_t sz, off_t& off, file* fl) {
+    auto irqs = lock_.lock();
+
+    waiter(current()).block_until(wq_, [&] () { 
+        return bb_->len_ > 0 || !writers_; }, lock_, irqs);
+
+    if (!writers_) {
+        fl->deref();
+        wq_.wake_all();
+        lock_.unlock(irqs);
+        return 0;
+    }
+
+    size_t pos = 0;
+    while (pos < sz && bb_->len_ > 0) {
+        size_t ncopy = sz - pos;
+        if (ncopy > BUFSZ - bb_->pos_) {
+            ncopy = BUFSZ - bb_->pos_;
+        }
+        if (ncopy > bb_->len_) {
+            ncopy = bb_->len_;
+        }
+        memcpy(&((char*) buf)[pos], &bb_->buf_[bb_->pos_], ncopy);
+        bb_->pos_ = (bb_->pos_ + ncopy) % BUFSZ;
+        bb_->len_ -= ncopy;
+        pos += ncopy;
+    }
+    wq_.wake_all();
+    lock_.unlock(irqs);
+
+    return pos;
+}
+
+size_t vnode_pipe::write(uintptr_t buf, size_t sz, off_t& off, file* fl) {
+    auto irqs = lock_.lock();
+
+    waiter(current()).block_until(wq_, [&] () { 
+        return bb_->len_ < BUFSZ || !readers_; }, lock_, irqs);
+
+    if (!readers_) {
+        fl->deref();            // this should handle marking down the file, which should handle the vnode
+        wq_.wake_all();         // hoping this will cause a chain reaction of dereferences
+        lock_.unlock(irqs);
+        return E_PIPE;
+    }
+
+    size_t pos = 0;
+    while (pos < sz && bb_->len_ < BUFSZ) {
+        size_t bindex = (bb_->pos_ + bb_->len_) % BUFSZ;
+        size_t ncopy = sz - pos;
+        if (ncopy > BUFSZ - bindex) {
+            ncopy = BUFSZ - bindex;
+        }
+        if (ncopy > BUFSZ - bb_->len_) {
+            ncopy = BUFSZ - bb_->len_;
+        }
+        memcpy(&bb_->buf_[bindex], &((char*) buf)[pos], ncopy);
+        pos += ncopy;
+        bb_->len_ += ncopy;
+    }
+    wq_.wake_all();
+    lock_.unlock(irqs);
+
+    return pos;
 }
 
 

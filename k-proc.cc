@@ -2,6 +2,7 @@
 #include "elf.h"
 #include "k-vmiter.hh"
 #include "k-devices.hh"
+#include "k-vfs.hh"
 
 proc* ptable[NPROC];            // array of process descriptor pointers
 spinlock ptable_lock;           // protects `ptable`

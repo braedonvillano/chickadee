@@ -27,6 +27,7 @@ class vmiter {
     inline bool writable() const;     // is va writable?
     inline bool user() const;         // is va user-accessible (unprivileged)?
 
+    inline int str_perm(uint64_t req_perms);
     inline bool perm_range(uint64_t req_perms, size_t sz);
 
     inline vmiter& find(uintptr_t va);   // change virtual address to `va`
@@ -155,10 +156,20 @@ inline bool vmiter::writable() const {
 inline bool vmiter::user() const {
     return perm(PTE_P | PTE_U);
 }
+inline int vmiter::str_perm(uint64_t req_perms) {
+    size_t n;
+    if (!va_) return -1;
+    for (n = 0; n != 64 && *((char*)va_) != '\0'; ++va_) {
+        if (!low()) return -1;
+        if (!perm(req_perms)) return -1;
+        ++n;
+    }
+    if (*((char*)va_) != '\0') return -1; 
+    return n;
+}
 inline bool vmiter::perm_range(uint64_t req_perms, size_t sz) {
     unsigned long end = sz + va_;
     if (end < va_) return false;
-    if (va_ > VA_LOWMAX) return false;
     while (va_ < end) {
         if (!low()) return false;
         if (!perm(req_perms)) return false; 
