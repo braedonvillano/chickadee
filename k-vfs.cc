@@ -202,8 +202,6 @@ size_t vnode_pipe::write(uintptr_t buf, size_t sz, file* fl) {
 }
 
 size_t vnode_memfile::read(uintptr_t buf, size_t sz, file* fl) {
-    // im in the vnode, so what i should do is access the memfile and read bitch
-    log_printf("in vnode_memfile, and the file opened, the offset is: %d\n", fl->off_);
     size_t off = fl->off_;
     char* src = (char*) m_->data_;
     size_t ncopy = sz; 
@@ -218,7 +216,17 @@ size_t vnode_memfile::read(uintptr_t buf, size_t sz, file* fl) {
 };
 
 size_t vnode_memfile::write(uintptr_t buf, size_t sz, file* fl) {
-    return 0;
+    size_t off = fl->off_;
+    char* des = (char*) m_->data_;
+    size_t ncopy = sz;
+
+    if (sz > m_->len_ - off) {
+        ncopy = m_->len_ - off;
+    }
+    memcpy(des + off, ((char*) buf), ncopy);
+    fl->off_ += ncopy;
+
+    return ncopy;
 };
 
 
