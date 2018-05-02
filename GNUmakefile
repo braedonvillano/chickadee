@@ -58,7 +58,10 @@ PROCESS_OBJS = $(PROCESS_LIB_OBJS) \
 	$(OBJDIR)/p-false.o \
 	$(OBJDIR)/p-initproc.o \
 	$(OBJDIR)/p-readdiskfile.o \
+	$(OBJDIR)/p-reallocator.o \
 	$(OBJDIR)/p-sh.o \
+	$(OBJDIR)/p-stressopen.o \
+	$(OBJDIR)/p-stresspipe.o \
 	$(OBJDIR)/p-testeintr.o \
 	$(OBJDIR)/p-testmemfs.o \
 	$(OBJDIR)/p-testmsleep.o \
@@ -84,7 +87,10 @@ INITFS_CONTENTS = $(shell find initfs -type f -not -name '\#*\#' -not -name '*~'
 	obj/p-false \
 	obj/p-initproc \
 	obj/p-readdiskfile \
+	obj/p-reallocator \
 	obj/p-sh \
+	obj/p-stressopen \
+	obj/p-stresspipe \
 	obj/p-testeintr \
 	obj/p-testmemfs \
 	obj/p-testmsleep \
