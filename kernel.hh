@@ -120,6 +120,7 @@ struct __attribute__((aligned(4096))) proc {
 extern proc* ptable[NPROC];
 extern spinlock ptable_lock;
 extern spinlock familial_lock;
+extern spinlock memfile_lock;
 #define KTASKSTACK_SIZE  4096
 
 // allocate a new `proc` and call its constructor

@@ -162,6 +162,9 @@ inline int vmiter::str_perm(uint64_t req_perms) {
     for (n = 0; n != 64 && *((char*)va_) != '\0'; ++va_) {
         if (!low()) return -1;
         if (!perm(req_perms)) return -1;
+        if (!((va_ + 1) % PAGESIZE)) {
+            return -1;
+        }
         ++n;
     }
     if (*((char*)va_) != '\0') return -1; 

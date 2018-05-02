@@ -17,6 +17,7 @@ volatile unsigned long ticks;   // # timer interrupts so far on CPU 0
 int kdisplay;                   // type of display
 
 spinlock familial_lock;
+spinlock memfile_lock;
 wait_queue waitq;
 wait_queue sleepq_wheel[WHEEL_SZ];
 
@@ -534,13 +535,45 @@ uintptr_t proc::syscall(regstate* regs) {
 
     case SYSCALL_OPEN: {
         uintptr_t name = regs->reg_rdi;
-        uintptr_t flags = regs->reg_rsi;
+        int flags = regs->reg_rsi;
 
         if (vmiter(this, name).str_perm(PTE_P | PTE_W | PTE_U) < 0) {
             return E_FAULT;
         }
 
-        return 0;
+        auto irqs = memfile_lock.lock();
+        memfile* mf = memfile::initfs_lookup((char*) name);
+        if (!mf) {
+            if (!(flags & OF_CREATE)) {
+                memfile_lock.unlock(irqs);
+                return E_NOENT;
+            }
+            mf = knew<memfile>((char*) name, nullptr, nullptr);
+        }
+        // do i need to add this file somehow to the array?
+        memfile_lock.unlock(irqs);
+        file* fl = kalloc_file();
+        vnode* vn = knew<vnode_memfile>(mf);
+        fdtable_->lock_.lock_noirq();
+        int fd = find_fd(fdtable_);
+        // ensure that a new file can be made
+        if (!mf || !fl || !vn || fd < 0) {
+            fdtable_->table_[fd] = nullptr;
+            fdtable_->lock_.unlock_noirq();
+            kfree(mf); kfree(fl); kfree(vn);
+            return -1;
+        }        
+        fl->vnode_ = vn;
+        fdtable_->table_[fd] = fl;
+        fdtable_->lock_.unlock_noirq();
+
+        if (flags & OF_TRUNC) {
+            mf->len_ = 0;
+        } 
+        fl->pread_ = (flags & OF_READ);
+        fl->pwrite_ = (flags & OF_WRITE);
+
+        return fd;
     }
 
     case SYSCALL_CLOSE: {
@@ -642,7 +675,7 @@ uintptr_t proc::syscall(regstate* regs) {
         fl->refs_++;
         fl->lock_.unlock(irqsf);
         // make the read call
-        size_t n = fl->vnode_->read(addr, sz, fl->off_, fl);
+        size_t n = fl->vnode_->read(addr, sz, fl);
         fl->deref();
 
         return n;
@@ -671,7 +704,7 @@ uintptr_t proc::syscall(regstate* regs) {
         fl->refs_++;
         fl->lock_.unlock(irqsf);
         // make the write call
-        size_t n = fl->vnode_->write(addr, sz, fl->off_, fl);
+        size_t n = fl->vnode_->write(addr, sz, fl);
         fl->deref();
 
         return n;

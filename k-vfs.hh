@@ -70,8 +70,8 @@ struct vnode {
     virtual void deref();
     void deref(bool flag);
 
-	virtual size_t read(uintptr_t buf, size_t sz, off_t& off, file* fl);
-	virtual size_t write(uintptr_t buf, size_t sz, off_t& off, file* fl);
+	virtual size_t read(uintptr_t buf, size_t sz, file* fl);
+	virtual size_t write(uintptr_t buf, size_t sz, file* fl);
 };
 
 // vnode subclass for standard - (in, out, err)
@@ -80,8 +80,8 @@ struct vnode_ioe : vnode {
 
 	void deref() override;
 
-	size_t read(uintptr_t buf, size_t sz, off_t& off, file* fl) override;
-	size_t write(uintptr_t buf, size_t sz, off_t& off, file* fl) override;
+	size_t read(uintptr_t buf, size_t sz, file* fl) override;
+	size_t write(uintptr_t buf, size_t sz, file* fl) override;
 
 	static vnode_ioe v_ioe;
 };
@@ -90,15 +90,15 @@ struct vnode_ioe : vnode {
 struct vnode_pipe : vnode {
 	const char* filename_ = "pipe";
 
-	size_t read(uintptr_t buf, size_t sz, off_t& off, file* fl) override;
-	size_t write(uintptr_t buf, size_t sz, off_t& off, file* fl) override;
+	size_t read(uintptr_t buf, size_t sz, file* fl) override;
+	size_t write(uintptr_t buf, size_t sz, file* fl) override;
 };
 
 struct vnode_memfile : vnode {
-    vnode_memfile(memfile* m) : m_(m) { filename_ = m->name_; }
+	vnode_memfile(memfile* m) : m_(m) { filename_ = m->name_; };
 
-	size_t read(uintptr_t buf, size_t sz, off_t& off, file* fl) override;
-	size_t write(uintptr_t buf, size_t sz, off_t& off, file* fl) override;
+	size_t read(uintptr_t buf, size_t sz, file* fl) override;
+	size_t write(uintptr_t buf, size_t sz, file* fl) override;
 
     private:
         memfile* m_;
@@ -111,8 +111,6 @@ struct bbuffer {
     char buf_[BUFSZ];
     size_t pos_;
     size_t len_;
-
-
 };
 
 #endif

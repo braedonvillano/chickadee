@@ -63,11 +63,11 @@ void vnode::deref(bool flag) {
 //		read/write do not need a buffer b/c the data inputted
 // 		and read is consumed immediatly, these resemble the originals
 
-size_t vnode::read(uintptr_t buf, size_t sz, off_t& off, file* fl) {
+size_t vnode::read(uintptr_t buf, size_t sz, file* fl) {
 	return 0;
 };
 
-size_t vnode::write(uintptr_t buf, size_t sz, off_t& off, file* fl) {
+size_t vnode::write(uintptr_t buf, size_t sz, file* fl) {
 	return 0;
 };
 
@@ -83,7 +83,7 @@ void vnode_ioe::deref() {
 	lock_.unlock(irqs);
 }
 
-size_t vnode_ioe::read(uintptr_t buf, size_t sz, off_t& off, file* fl) {
+size_t vnode_ioe::read(uintptr_t buf, size_t sz, file* fl) {
 	auto& kbd = keyboardstate::get();
     auto irqs = kbd.lock_.lock();
 
@@ -119,7 +119,7 @@ size_t vnode_ioe::read(uintptr_t buf, size_t sz, off_t& off, file* fl) {
     return n;
 }
 
-size_t vnode_ioe::write(uintptr_t buf, size_t sz, off_t& off, file* fl) {
+size_t vnode_ioe::write(uintptr_t buf, size_t sz, file* fl) {
 	auto& csl = consolestate::get();
     auto irqs = csl.lock_.lock();
 
@@ -135,7 +135,7 @@ size_t vnode_ioe::write(uintptr_t buf, size_t sz, off_t& off, file* fl) {
     return n;
 }
 
-size_t vnode_pipe::read(uintptr_t buf, size_t sz, off_t& off, file* fl) {
+size_t vnode_pipe::read(uintptr_t buf, size_t sz, file* fl) {
     auto irqs = lock_.lock();
 
     waiter(current()).block_until(wq_, [&] () { 
@@ -168,7 +168,7 @@ size_t vnode_pipe::read(uintptr_t buf, size_t sz, off_t& off, file* fl) {
     return pos;
 }
 
-size_t vnode_pipe::write(uintptr_t buf, size_t sz, off_t& off, file* fl) {
+size_t vnode_pipe::write(uintptr_t buf, size_t sz, file* fl) {
     auto irqs = lock_.lock();
 
     waiter(current()).block_until(wq_, [&] () { 
@@ -176,7 +176,7 @@ size_t vnode_pipe::write(uintptr_t buf, size_t sz, off_t& off, file* fl) {
 
     if (!readers_) {
         fl->deref();            // this should handle marking down the file, which should handle the vnode
-        wq_.wake_all();         // hoping this will cause a chain reaction of dereferences
+        wq_.wake_all();         // hoping this will cause a chain reaction of decrementing references
         lock_.unlock(irqs);
         return E_PIPE;
     }
@@ -200,6 +200,27 @@ size_t vnode_pipe::write(uintptr_t buf, size_t sz, off_t& off, file* fl) {
 
     return pos;
 }
+
+size_t vnode_memfile::read(uintptr_t buf, size_t sz, file* fl) {
+    // im in the vnode, so what i should do is access the memfile and read bitch
+    log_printf("in vnode_memfile, and the file opened, the offset is: %d\n", fl->off_);
+    size_t off = fl->off_;
+    char* src = (char*) m_->data_;
+    size_t ncopy = sz; 
+
+    if (sz + off > m_->len_) {
+        ncopy = m_->len_ - off;
+    }
+    memcpy(((char*) buf), src + off, ncopy);
+    fl->off_ += ncopy;
+
+    return ncopy;
+};
+
+size_t vnode_memfile::write(uintptr_t buf, size_t sz, file* fl) {
+    return 0;
+};
+
 
 
 

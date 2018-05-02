@@ -97,9 +97,11 @@ void process_main() {
     f = sys_open(page, OF_READ);
     assert_gt(f, 2);
 
+
     n = sys_read(f, buf, 4);
     assert_eq(n, 4);
     assert_memeq(buf, "When", 4);
+
 
     memcpy(page + PAGESIZE - 11, "emerson.txt", 11);
     f2 = sys_open(page + PAGESIZE - 11, OF_READ);
