@@ -327,7 +327,7 @@ void exit(proc* p, int flag, int exit_stat) {
     p->state_ = proc::exited;
     p->exit_status_ = exit_stat;
     if (!flag) { ptable[pid] = nullptr; }
-    // free the process's memory 
+    // handle the fdtable and file structure
     auto irqsf = p->fdtable_->lock_.lock();
     for (int i = 0; i < NFDS; i++) {
         file* ptr = p->fdtable_->table_[i];
@@ -335,18 +335,29 @@ void exit(proc* p, int flag, int exit_stat) {
     }
     p->fdtable_->lock_.unlock(irqsf);
     kfree(p->fdtable_);
+    // free the process's memory 
     for (vmiter it(p); it.low(); it.next()) {
         if (it.user() && it.present() && it.pa() != ktext2pa(console)) { 
             kfree((void*) it.ka());
         }
     }
-    // free the process's page tabels
     for (ptiter it(p); it.low(); it.next()) {
         kfree((void*) pa2ka(it.ptp_pa()));
     }
     ptable_lock.unlock(irqs);
     // reparent children and wake sleeping parent
     if (flag) { parenting(p, p_init); }
+}
+
+// as of now, needs to be called with fdt lock
+int close(fdtable* fdt, int fd) {
+    // lock fdtable to access file
+    file* fl = fdt->table_[fd];
+    fdt->table_[fd] = nullptr;
+    // lock and lower the file refs
+    if (!fl) { return E_BADF; }
+    fl->deref();
+    return 0;
 }
 
 
