@@ -711,16 +711,15 @@ uintptr_t proc::syscall(regstate* regs) {
     }
 
     case SYSCALL_EXECV: {
-        log_printf("im in execv\n");
-        // we need to first validate the arguments
         uintptr_t pathname = regs->reg_rdi;
         char** argv = (char**) regs->reg_rsi;
         int argc = regs->reg_rdx;
 
+        // log_printf("what the what -> %p\n", argv[0]);
+
         if (vmiter(this, pathname).str_perm(PTE_P | PTE_W | PTE_U) < 0) {
             return E_FAULT;
         }
-        log_printf("looks like the path is valid\n");
         // for (int i = 0; argv && argv[i] != nullptr && i < argc; i++) {
         //     if (vmiter(this, (uintptr_t) argv[i]).str_perm(PTE_P | PTE_W | PTE_U) < 0) {
         //         return E_FAULT;
@@ -733,35 +732,85 @@ uintptr_t proc::syscall(regstate* regs) {
 
         memcpy(&new_regs, regs, sizeof(regstate));
 
-        log_printf("my stack variables seem to be fine\n");
-
         ml.pagetable_ = pt;
         ml.mf_ = memfile::initfs_lookup((char*) pathname);
         int r = load(ml);
         if (r >= 0) {
             new_regs.reg_rip = ml.entry_rip_;
         } else {
+            kfree(pt);
             return r;
         }
 
-        log_printf("the load makes it?\n");
-
+        // init_user(pid_, pt, fdtable_);
         x86_64_pagetable* old_pt = pagetable_;
-        init_user(pid_, pt, fdtable_);
-        // this->pagetable_ = pt;
+        pagetable_ = pt;
         regs_ = &new_regs;
+        regs_->reg_rdi = argc;
         regs_->reg_rsp = MEMSIZE_VIRTUAL;
         x86_64_page* stkpg = kallocpage();
-        assert(stkpg);
-        int n = vmiter(this, MEMSIZE_VIRTUAL - PAGESIZE).map(ka2pa(stkpg));
-        int m = vmiter(this, ktext2pa(console)).map(ktext2pa(console), PTE_P | PTE_W | PTE_U);
-        if (n < 0 || m < 0) {
+        if (!stkpg) {
+            kfree(pt); kfree(stkpg);
             return -1;
         }
 
+
+
+        // log_printf("what the what -> %p\n", argv[0]);
+
+        int n = vmiter(this, MEMSIZE_VIRTUAL - PAGESIZE).map(ka2pa(stkpg));
+        int m = vmiter(this, ktext2pa(console)).map(ktext2pa(console), PTE_P | PTE_W | PTE_U);
+        if (n < 0 || m < 0) {
+            kfree(pt); kfree(stkpg);
+            return -1;
+        }
+
+        // need to copy the args to the stack page
+        // uintptr_t addr[argc + 1];
+        // size_t pos = 0;
+        // for (int i = 0; i < argc; i++) {
+        //     char* c = argv[i];
+        //     char* b = argv[i];
+        //     addr[i] = (uintptr_t) stkpg + pos;
+        //     while (c && *c != '\0') {
+        //         // here we want to copy every character
+        //         log_printf("%c", *c);
+        //         memcpy((void*) (ka2pa(stkpg) + pos), c, 1);
+        //         c++;
+        //         pos++;
+        //     }
+        //     // if (b) {
+        //         // then we want to add the nullterminator
+        //     memcpy((void*) (ka2pa(stkpg) + pos), c, 1);
+        //     // }
+        //     log_printf("\n");
+        //     pos++;
+        // }
+        // while (pos % 8 != 0) {
+        //     pos++;
+        // }
+        // addr[argc + 1] = (uintptr_t) nullptr;
+        // // so make the address right after my strings point to shit
+        // uintptr_t help = (uintptr_t) stkpg + pos;
+        // for (int j = 0; j < argc; j++) {
+        //     memcpy(stkpg + pos, &addr[j], sizeof(uintptr_t));
+        //     pos += sizeof(char*);
+        // }
+        // memcpy(stkpg + pos, &addr[argc + 1], sizeof(uintptr_t));
+        // console_printf("%p\n", (uintptr_t) stkpg);
+        // console_printf("%p\n", help);
+
+        // regs_->reg_rsi = help;
+        // if (pos > PAGESIZE) {
+        //     kfree(pt); kfree(stkpg);
+        //     return -1;
+        // }
+        // addr[argc] = nullptr;
+
         set_pagetable(pt);
 
-        log_printf("the set_pagetable worked!\n");
+        // log_printf("the value of argc: %d\n", argc);
+     
 
         for (vmiter it(old_pt); it.low(); it.next()) {
             if (it.user() && it.present() && it.pa() != ktext2pa(console)) { 
@@ -772,11 +821,7 @@ uintptr_t proc::syscall(regstate* regs) {
             kfree((void*) pa2ka(it.ptp_pa()));
         }
 
-        log_printf("cant free memory?\n");
-
-        // then we should change the rip and the rsp of the regs_
-        // so now that we have the arguments, we should validate all of them
-        this->yield_noreturn();
+        yield_noreturn();
     }
 
     case SYSCALL_READDISKFILE: {
