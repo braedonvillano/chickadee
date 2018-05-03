@@ -710,6 +710,75 @@ uintptr_t proc::syscall(regstate* regs) {
         return n;
     }
 
+    case SYSCALL_EXECV: {
+        log_printf("im in execv\n");
+        // we need to first validate the arguments
+        uintptr_t pathname = regs->reg_rdi;
+        char** argv = (char**) regs->reg_rsi;
+        int argc = regs->reg_rdx;
+
+        if (vmiter(this, pathname).str_perm(PTE_P | PTE_W | PTE_U) < 0) {
+            return E_FAULT;
+        }
+        log_printf("looks like the path is valid\n");
+        // for (int i = 0; argv && argv[i] != nullptr && i < argc; i++) {
+        //     if (vmiter(this, (uintptr_t) argv[i]).str_perm(PTE_P | PTE_W | PTE_U) < 0) {
+        //         return E_FAULT;
+        //     }
+        // }
+        x86_64_pagetable* pt = kalloc_pagetable();
+        if (!pt) return -1;
+        regstate new_regs;
+        memfile_loader ml;
+
+        memcpy(&new_regs, regs, sizeof(regstate));
+
+        log_printf("my stack variables seem to be fine\n");
+
+        ml.pagetable_ = pt;
+        ml.mf_ = memfile::initfs_lookup((char*) pathname);
+        int r = load(ml);
+        if (r >= 0) {
+            new_regs.reg_rip = ml.entry_rip_;
+        } else {
+            return r;
+        }
+
+        log_printf("the load makes it?\n");
+
+        x86_64_pagetable* old_pt = pagetable_;
+        init_user(pid_, pt, fdtable_);
+        // this->pagetable_ = pt;
+        regs_ = &new_regs;
+        regs_->reg_rsp = MEMSIZE_VIRTUAL;
+        x86_64_page* stkpg = kallocpage();
+        assert(stkpg);
+        int n = vmiter(this, MEMSIZE_VIRTUAL - PAGESIZE).map(ka2pa(stkpg));
+        int m = vmiter(this, ktext2pa(console)).map(ktext2pa(console), PTE_P | PTE_W | PTE_U);
+        if (n < 0 || m < 0) {
+            return -1;
+        }
+
+        set_pagetable(pt);
+
+        log_printf("the set_pagetable worked!\n");
+
+        for (vmiter it(old_pt); it.low(); it.next()) {
+            if (it.user() && it.present() && it.pa() != ktext2pa(console)) { 
+                kfree((void*) it.ka());
+            }
+        }
+        for (ptiter it(old_pt); it.low(); it.next()) {
+            kfree((void*) pa2ka(it.ptp_pa()));
+        }
+
+        log_printf("cant free memory?\n");
+
+        // then we should change the rip and the rsp of the regs_
+        // so now that we have the arguments, we should validate all of them
+        this->yield_noreturn();
+    }
+
     case SYSCALL_READDISKFILE: {
         const char* filename = reinterpret_cast<const char*>(regs->reg_rdi);
         unsigned char* buf = reinterpret_cast<unsigned char*>(regs->reg_rsi);

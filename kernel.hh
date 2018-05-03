@@ -16,6 +16,7 @@ struct yieldstate;
 struct page;
 struct fdtable;
 struct file;
+struct memfile;
 
 // kernel.hh
 //
@@ -173,6 +174,12 @@ struct __attribute__((aligned(4096))) cpustate {
  private:
     void init_cpu_hardware();
     void init_idle_task();
+};
+
+struct memfile_loader : public proc::loader {
+    memfile* mf_;
+    ssize_t get_page(uint8_t** pg, size_t off) override;
+    void put_page(uint8_t* pg) override;
 };
 
 #define NCPU 16
