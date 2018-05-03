@@ -328,6 +328,12 @@ void exit(proc* p, int flag, int exit_stat) {
     p->exit_status_ = exit_stat;
     if (!flag) { ptable[pid] = nullptr; }
     // free the process's memory 
+    auto irqsf = p->fdtable_->lock_.lock();
+    for (int i = 0; i < NFDS; i++) {
+        file* ptr = p->fdtable_->table_[i];
+        if (ptr) { ptr->deref(); }
+    }
+    p->fdtable_->lock_.unlock(irqsf);
     kfree(p->fdtable_);
     for (vmiter it(p); it.low(); it.next()) {
         if (it.user() && it.present() && it.pa() != ktext2pa(console)) { 
@@ -380,13 +386,10 @@ void reap_child(proc* p, wpret* wpr) {
 
 bool msleep_cond(proc* p, unsigned long want, int* res) {
     if (!(long(want - ticks) > 0)) { *res = 0; return true; }
-    // auto irqs = familial_lock.lock();
     if (p->sleepq_ < 0) { 
-        // familial_lock.unlock(irqs);
         *res = E_INTR; 
         return true; 
     }
-    // familial_lock.unlock(irqs);
     return false;
 }
 
