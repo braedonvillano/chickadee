@@ -16,6 +16,7 @@ volatile unsigned long ticks;   // # timer interrupts so far on CPU 0
 int kdisplay;                   // type of display
 
 spinlock familial_lock;
+spinlock interrupt_lock;
 wait_queue waitq;
 wait_queue sleepq_wheel[WHEEL_SZ];
 
@@ -257,15 +258,26 @@ int fork(proc* parent, regstate* regs) {
     }
     p = ptable[pid] = reinterpret_cast<proc*>(kallocpage());
     x86_64_pagetable* npt = kalloc_pagetable();
-    // if there were no empty processes
-    if (!pid || !p || !npt) {
+    fdtable* fdt = kalloc_fdtable();
+    // free if no available proc or memory
+    if (!pid || !p || !npt || !fdt) {
         ptable[pid] = nullptr;
         ptable_lock.unlock(irqs);
-        kfree(p); kfree(npt);
+        kfree(p); kfree(npt); kfree(fdt);
         return -1;
     }    
-    p->init_user(pid, npt);
+    p->init_user(pid, npt, fdt);
     ptable_lock.unlock(irqs);
+    // copy the fdtable structur to the child
+    auto irqsf = p->fdtable_->lock_.lock();
+    for (int j = 0; j < NFDS; j++) {
+        file* ptr = parent->fdtable_->table_[j];
+        if (ptr) {
+            ptr->adref();
+            p->fdtable_->table_[j] = ptr;
+        }
+    }
+    p->fdtable_->lock_.unlock(irqsf);
     // loop through virtual memory and copy to child
     for (vmiter it(parent); it.low(); it.next()) {
         if (!it.user() || !it.present()) continue;
@@ -292,7 +304,7 @@ int fork(proc* parent, regstate* regs) {
     // reparent the new process
     auto irqsp = familial_lock.lock();
     p->ppid_ = parent->pid_;
-    p->child_links_.reset();
+    // p->child_links_.reset();
     parent->child_list.push_front(p);
     p->child_list.reset();
     familial_lock.unlock(irqsp);
@@ -316,6 +328,7 @@ void exit(proc* p, int flag, int exit_stat) {
     p->exit_status_ = exit_stat;
     if (!flag) { ptable[pid] = nullptr; }
     // free the process's memory 
+    kfree(p->fdtable_);
     for (vmiter it(p); it.low(); it.next()) {
         if (it.user() && it.present() && it.pa() != ktext2pa(console)) { 
             kfree((void*) it.ka());
@@ -338,11 +351,13 @@ void exit(proc* p, int flag, int exit_stat) {
 //    any remaing should be self explanatory
 
 void parenting(proc* p, proc* p_init) {
-    auto irqsp = familial_lock.lock();
+    auto irqs = familial_lock.lock();
     while (proc* p_ = p->child_list.pop_front()) {
         p_->ppid_ = INIT_PID;
         p_init->child_list.push_front(p_);
     }
+    familial_lock.unlock(irqs);
+    auto irqsp = interrupt_lock.lock();
     waitq.wake_pid(p->ppid_);
     proc* prt = ptable[p->ppid_];
     int index = prt->sleepq_;
@@ -350,7 +365,7 @@ void parenting(proc* p, proc* p_init) {
         prt->sleepq_ = -1;
         sleepq_wheel[index].wake_pid(p->ppid_);
     }
-    familial_lock.unlock(irqsp);
+    interrupt_lock.unlock(irqsp);
 }
 
 void reap_child(proc* p, wpret* wpr) {
@@ -365,13 +380,13 @@ void reap_child(proc* p, wpret* wpr) {
 
 bool msleep_cond(proc* p, unsigned long want, int* res) {
     if (!(long(want - ticks) > 0)) { *res = 0; return true; }
-    auto irqs = familial_lock.lock();
+    // auto irqs = familial_lock.lock();
     if (p->sleepq_ < 0) { 
-        familial_lock.unlock(irqs);
+        // familial_lock.unlock(irqs);
         *res = E_INTR; 
         return true; 
     }
-    familial_lock.unlock(irqs);
+    // familial_lock.unlock(irqs);
     return false;
 }
 
@@ -445,14 +460,20 @@ uintptr_t proc::syscall(regstate* regs) {
         int res;
         unsigned long want = ticks + (regs->reg_rdi + 9) / 10;
         int indx = sleepq_ = want % WHEEL_SZ;
+        auto irqs = interrupt_lock.lock();
         waiter(this).block_until(sleepq_wheel[indx], 
-            [&] () { return msleep_cond(this, want, &res); });
+            [&] () { return msleep_cond(this, want, &res); }, 
+            interrupt_lock, irqs );
 
+        interrupt_lock.unlock(irqs);
         return res;
     }
 
     case SYSCALL_GETPPID: {
-        return ppid_;
+        auto irqs = familial_lock.lock();
+        pid_t ppid = this->ppid_;
+        familial_lock.unlock(irqs);
+        return ppid;
     }
 
     // this is to map a the console to a process (BV)
