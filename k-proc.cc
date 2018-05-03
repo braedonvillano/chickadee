@@ -2,6 +2,7 @@
 #include "elf.h"
 #include "k-vmiter.hh"
 #include "k-devices.hh"
+#include "k-vfs.hh"
 
 proc* ptable[NPROC];            // array of process descriptor pointers
 spinlock ptable_lock;           // protects `ptable`
@@ -33,12 +34,25 @@ proc* kalloc_proc() {
     }
 }
 
+fdtable* kalloc_fdtable() {
+    fdtable* ptr = knew<fdtable>();
+    if (ptr) {
+        for (int i = 0; i < NFDS; i++) {
+            ptr->table_[i] = nullptr;
+        }
+    }
+    return ptr;
+}
+
+file* kalloc_file() {
+    return knew<file>();
+}
 
 // proc::init_user(pid, pt)
 //    Initialize this `proc` as a new runnable user process with PID `pid`
 //    and initial page table `pt`.
 
-void proc::init_user(pid_t pid, x86_64_pagetable* pt) {
+void proc::init_user(pid_t pid, x86_64_pagetable* pt, fdtable* fdt) {
     uintptr_t addr = reinterpret_cast<uintptr_t>(this);
     assert(!(addr & PAGEOFFMASK));
     // ensure layout `k-exception.S` expects
@@ -62,14 +76,18 @@ void proc::init_user(pid_t pid, x86_64_pagetable* pt) {
     regs_->reg_rflags = EFLAGS_IF;
 
     yields_ = nullptr;
-
     state_ = proc::runnable;
 
+    pagetable_ = pt;
+    fdtable_ = fdt;
+
     cpu_ = -1;
+    sleepq_ = -1;
+    exit_status_ = -1;
 
     runq_links_.reset();
-
-    pagetable_ = pt;
+    child_links_.reset();
+    child_list.reset();
 
     canary_ = CANARY;
 }
@@ -100,6 +118,17 @@ void proc::init_kernel(pid_t pid, void (*f)(proc*)) {
     state_ = proc::runnable;
 
     pagetable_ = early_pagetable;
+    fdtable_ = nullptr;
+
+    cpu_ = -1;
+    sleepq_ = -1;
+    exit_status_ = -1;
+
+    runq_links_.reset();
+    child_links_.reset();
+    child_list.reset();
+
+    canary_ = CANARY;
 }
 
 

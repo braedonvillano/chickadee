@@ -1,5 +1,6 @@
 #include "kernel.hh"
 #include "k-vmiter.hh"
+#include "k-vfs.hh"
 
 class memusage {
   public:
@@ -17,6 +18,7 @@ class memusage {
     // Flag bits for memory types:
     static constexpr unsigned f_kernel = 1;     // kernel-restricted
     static constexpr unsigned f_user = 2;       // user-accessible
+    static constexpr unsigned f_file = 3;       // file-system
     // `f_process(pid)` is for memory associated with process `pid`
     static constexpr unsigned f_process(int pid) {
         if (pid >= 30) {
@@ -82,6 +84,16 @@ void memusage::refresh() {
         if (p && p->state_ != proc::exited && p->state_ != proc::wexited) {
             mark(ka2pa(p), f_kernel | f_process(pid));
 
+            // mark the file system in proc
+            if (p->fdtable_) { 
+                mark(ka2pa(p->fdtable_), f_file);
+                for (int i = 0; i < NFDS; i++) {
+                    if (p->fdtable_->table_[i]) {
+                        mark(ka2pa(p->fdtable_->table_[i]), f_file);
+                    }
+                }
+            }
+
             auto irqs = p->lock_pagetable_read();
             if (p->pagetable_ && p->pagetable_ != early_pagetable) {
                 for (ptiter it(p); it.low(); it.next()) {
@@ -134,6 +146,11 @@ uint16_t memusage::symbol_at(uintptr_t pa) const {
     } else {
         if (v == 0) {
             return '.' | 0x0700;
+        } else if (v == f_file) {
+            uint64_t c = 0xF << 8;
+            c |= 0x3500;
+            c |= '&';
+            return c;
         } else if (v == f_kernel) {
             return 'K' | 0x4000;
         } else if ((v & f_kernel) && (v & f_user)) {

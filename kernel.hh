@@ -6,7 +6,6 @@
 #include "k-list.hh"
 #include "k-lock.hh"
 #include "k-memrange.hh"
-#include "k-list.hh"
 #if CHICKADEE_PROCESS
 #error "kernel.hh should not be used by process code."
 #endif
@@ -14,6 +13,9 @@ struct elf_program;
 struct proc;
 struct yieldstate;
 struct page;
+struct fdtable;
+struct file;
+struct memfile;
 
 // kernel.hh
 //
@@ -25,10 +27,18 @@ struct wpret {
     bool exit;
     bool block;
     pid_t pid_c;
+
     wpret() : p(nullptr), stat(0), exit(false), 
-    block(false), pid_c(E_CHILD) {}
-    // exit(false), pid_c(E_CHILD),
-    // block(false), p(nullptr)
+    block(false), pid_c(E_CHILD) {};
+    
+    inline void clear();
+};
+
+inline void wpret::clear() {
+    block = false; 
+    exit = false;
+    p = nullptr;
+    pid_c = E_CHILD;
 };
 
 // used for buddy allocators and pages array
@@ -56,15 +66,14 @@ struct __attribute__((aligned(4096))) proc {
     };
     state_t state_;                    // process state
     x86_64_pagetable* pagetable_;      // process's page table
+    fdtable* fdtable_;                 // a pointer to the fdtable
+
     int cpu_;
     int sleepq_;
-    int sleepq__;
     int exit_status_;
 
     list_links runq_links_;
-
     list_links child_links_;            // link for child pids
-
     list<proc, &proc::child_links_> child_list;
 
     proc();
@@ -73,7 +82,8 @@ struct __attribute__((aligned(4096))) proc {
     inline bool contains(uintptr_t addr) const;
     inline bool contains(void* ptr) const;
 
-    void init_user(pid_t pid, x86_64_pagetable* pt);
+    void init_user(pid_t pid, x86_64_pagetable* pt, fdtable* fdt = nullptr);
+    // void init_user(pid_t pid, x86_64_pagetable* pt);
     void init_kernel(pid_t pid, void (*f)(proc*));
 
     struct loader {

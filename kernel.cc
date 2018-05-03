@@ -3,8 +3,10 @@
 #include "k-chkfs.hh"
 #include "k-devices.hh"
 #include "k-vmiter.hh"
+#include "k-vfs.hh"
 #define INIT_PID 1
 #define WHEEL_SZ 10
+#define VALFD(x) (x < NFDS && x >= 0) 
 
 // kernel.cc
 //
@@ -72,7 +74,7 @@ void build_init_proc() {
 
     p->init_kernel(INIT_PID, init_reaper);
 
-    int cpu = INIT_PID % ncpu;
+    int cpu = p->cpu_ = INIT_PID % ncpu;
     cpus[cpu].runq_lock_.lock_noirq();
     cpus[cpu].enqueue(p);
     cpus[cpu].runq_lock_.unlock_noirq();
@@ -92,8 +94,20 @@ void process_setup(pid_t pid, const char* name) {
     assert(!ptable[pid]);
     proc* p = ptable[pid] = kalloc_proc();
     x86_64_pagetable* npt = kalloc_pagetable();
-    assert(p && npt);
-    p->init_user(pid, npt);
+    fdtable* fdt = kalloc_fdtable();
+    file* fl = kalloc_file();
+    assert(p && npt && fdt && fl);
+    p->init_user(pid, npt, fdt);
+
+    p->fdtable_->lock_.lock_noirq();
+    fl->type_ = file::stream;
+    fl->vnode_ = &vnode_ioe::v_ioe;
+    p->fdtable_->table_[0] = fl;
+    fl->adref();
+    p->fdtable_->table_[1] = fl;
+    fl->adref();
+    p->fdtable_->table_[2] = fl;
+    p->fdtable_->lock_.unlock_noirq();
 
     familial_lock.lock_noirq();
     p->ppid_ = INIT_PID;
@@ -200,8 +214,7 @@ void proc::exception(regstate* regs) {
 //    Waitpid helper to reap a process after exiting
 
 void wait_pid_cond(proc* parent, wpret* wpr, pid_t pid, int opts) {
-    wpr->block = false; wpr->exit = false;
-    wpr->pid_c = E_CHILD; wpr->p = nullptr;
+    wpr->clear();
     auto irqsp = familial_lock.lock();
     proc* p = parent->child_list.front(); 
     if (!p) { familial_lock.unlock(irqsp); return; }
@@ -473,6 +486,12 @@ uintptr_t proc::syscall(regstate* regs) {
         uintptr_t addr = regs->reg_rsi;
         size_t sz = regs->reg_rdx;
 
+        if (!sz) return 0;
+        if (!VALFD(fd)) return E_BADF;
+        if (!vmiter(this, addr).perm_range(PTE_P | PTE_W | PTE_U, sz)) {
+            return E_FAULT;
+        }
+
         auto& kbd = keyboardstate::get();
         auto irqs = kbd.lock_.lock();
 
@@ -512,6 +531,12 @@ uintptr_t proc::syscall(regstate* regs) {
         int fd = regs->reg_rdi;
         uintptr_t addr = regs->reg_rsi;
         size_t sz = regs->reg_rdx;
+
+        if (!sz) return 0;
+        if (!VALFD(fd)) return E_BADF;
+        if (!vmiter(this, addr).perm_range(PTE_P | PTE_W | PTE_U, sz)) {
+            return E_FAULT;
+        }
 
         auto& csl = consolestate::get();
         auto irqs = csl.lock_.lock();
