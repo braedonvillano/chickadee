@@ -9,7 +9,7 @@ void process_main() {
     }
 
     const char* args[] = {
-        "allocexit", nullptr
+        "allocexit", "help", nullptr
     };
     int r = sys_execv("allocexit", args);
     assert_eq(r, 0);

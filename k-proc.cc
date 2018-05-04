@@ -134,13 +134,6 @@ void proc::init_kernel(pid_t pid, void (*f)(proc*)) {
 
 // PROCESS LOADING FUNCTIONS
 
-namespace {
-struct memfile_loader : public proc::loader {
-    memfile* mf_;
-    ssize_t get_page(uint8_t** pg, size_t off) override;
-    void put_page(uint8_t* pg) override;
-};
-
 // loader::get_page(pg, off)
 //    Load a page at offset `off`, which is page-aligned. Set `*pg`
 //    to the address of the loaded page and return the number of
@@ -164,7 +157,6 @@ ssize_t memfile_loader::get_page(uint8_t** pg, size_t off) {
 //    which is a page returned by a previous call to `get_page`.
 
 void memfile_loader::put_page(uint8_t* pg) {
-}
 }
 
 

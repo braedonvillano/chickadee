@@ -4,9 +4,10 @@
 #include "k-devices.hh"
 #include "k-vmiter.hh"
 #include "k-vfs.hh"
-#define INIT_PID 1
-#define WHEEL_SZ 10
-#define VALFD(x) (x < NFDS && x >= 0) 
+#define INIT_PID     1
+#define WHEEL_SZ     10
+#define VALFD(x)     (x < NFDS && x >= 0) 
+#define OFF2USR(x)   (MEMSIZE_VIRTUAL - (PAGESIZE - x))
 
 // kernel.cc
 //
@@ -17,6 +18,7 @@ int kdisplay;                   // type of display
 
 spinlock familial_lock;
 spinlock interrupt_lock;
+spinlock memfile_lock;
 wait_queue waitq;
 wait_queue sleepq_wheel[WHEEL_SZ];
 
@@ -349,12 +351,10 @@ void exit(proc* p, int flag, int exit_stat) {
     if (flag) { parenting(p, p_init); }
 }
 
-// as of now, needs to be called with fdt lock
+// needs to be called with fdt lock
 int close(fdtable* fdt, int fd) {
-    // lock fdtable to access file
     file* fl = fdt->table_[fd];
     fdt->table_[fd] = nullptr;
-    // lock and lower the file refs
     if (!fl) { return E_BADF; }
     fl->deref();
     return 0;
@@ -397,10 +397,15 @@ void reap_child(proc* p, wpret* wpr) {
 
 bool msleep_cond(proc* p, unsigned long want, int* res) {
     if (!(long(want - ticks) > 0)) { *res = 0; return true; }
+    auto irqs = interrupt_lock.lock();
+
     if (p->sleepq_ < 0) { 
-        *res = E_INTR; 
+        *res = E_INTR;
+        interrupt_lock.unlock(irqs);
         return true; 
     }
+    interrupt_lock.unlock(irqs);
+
     return false;
 }
 
@@ -411,6 +416,17 @@ void canary_check(proc* p) {
     for (int i = 0; i < ncpu; ++i) {
         assert(cpus[i].canary_ == CANARY);
     }
+}
+
+// call with the fdtable lock held
+int find_fd(fdtable* fdt) {
+    for (int i = 0; i < NFDS; i++) {
+        if (!fdt->table_[i]) {
+            fdt->table_[i] = (file*) 0xDEADBEEF;
+            return i;
+        }
+    }
+    return -1;
 }
 
 // proc::syscall(regs)
@@ -473,13 +489,12 @@ uintptr_t proc::syscall(regstate* regs) {
     case SYSCALL_MSLEEP: {
         int res;
         unsigned long want = ticks + (regs->reg_rdi + 9) / 10;
-        int indx = sleepq_ = want % WHEEL_SZ;
         auto irqs = interrupt_lock.lock();
-        waiter(this).block_until(sleepq_wheel[indx], 
-            [&] () { return msleep_cond(this, want, &res); }, 
-            interrupt_lock, irqs );
-
+        int indx = sleepq_ = want % WHEEL_SZ;
         interrupt_lock.unlock(irqs);
+        waiter(this).block_until(sleepq_wheel[indx], 
+            [&] () { return msleep_cond(this, want, &res); });
+
         return res;
     }
 
@@ -516,6 +531,128 @@ uintptr_t proc::syscall(regstate* regs) {
         return wpr.pid_c;
     }
 
+    case SYSCALL_OPEN: {
+        uintptr_t name = regs->reg_rdi;
+        int flags = regs->reg_rsi;
+
+        if (vmiter(this, name).str_perm(PTE_P | PTE_W | PTE_U) < 0) {
+            return E_FAULT;
+        }
+
+        auto irqs = memfile_lock.lock();
+        memfile* mf = memfile::initfs_lookup((char*) name);
+        if (!mf) {
+            if (!(flags & OF_CREATE)) {
+                memfile_lock.unlock(irqs);
+                return E_NOENT;
+            }
+            mf = knew<memfile>((char*) name, nullptr, nullptr);
+        }
+        // do i need to add this file somehow to the array?
+        memfile_lock.unlock(irqs);
+        file* fl = kalloc_file();
+        vnode* vn = knew<vnode_memfile>(mf);
+        fdtable_->lock_.lock_noirq();
+        int fd = find_fd(fdtable_);
+        // ensure that a new file can be made
+        if (!mf || !fl || !vn || fd < 0) {
+            fdtable_->table_[fd] = nullptr;
+            fdtable_->lock_.unlock_noirq();
+            kfree(mf); kfree(fl); kfree(vn);
+            return -1;
+        }        
+        fl->vnode_ = vn;
+        fdtable_->table_[fd] = fl;
+        fdtable_->lock_.unlock_noirq();
+
+        if (flags & OF_TRUNC) {
+            mf->len_ = 0;
+        } 
+        fl->pread_ = (flags & OF_READ);
+        fl->pwrite_ = (flags & OF_WRITE);
+
+        return fd;
+    }
+
+    case SYSCALL_CLOSE: {
+        int fd = regs->reg_rdi;
+        auto irqs = fdtable_->lock_.lock(); 
+        int r = close(fdtable_, fd);
+        fdtable_->lock_.unlock(irqs);
+
+        return r;
+    }
+
+    case SYSCALL_DUP2: {
+        int oldfd = regs->reg_rdi;
+        int newfd = regs->reg_rsi;
+
+        if (!VALFD(oldfd) || !VALFD(newfd)) {
+            return E_BADF;
+        }        
+
+        fdtable* fdt = this->fdtable_;
+        auto irqs = fdt->lock_.lock();
+        if (!fdt->table_[oldfd]) {
+            fdt->lock_.unlock(irqs);
+            return E_BADF;
+        }
+        if (oldfd == newfd) {
+            fdt->lock_.unlock(irqs);
+            return newfd;
+        }
+        // if there is an open file, then close it 
+        if (fdt->table_[newfd]) {
+            close(fdt, newfd);
+        }
+        fdt->table_[newfd] = fdt->table_[oldfd];
+        file* fl = fdt->table_[newfd];
+        fl->adref();
+        fdt->lock_.unlock(irqs);
+
+        return newfd;
+    }
+
+    case SYSCALL_PIPE: {
+        fdtable* fdt = this->fdtable_;
+        auto irqs = fdt->lock_.lock();
+        int rfd = find_fd(fdt);
+        int wfd = find_fd(fdt);
+
+        if (rfd < 0 || wfd < 0) {
+            fdt->table_[rfd] = nullptr;
+            fdt->table_[wfd] = nullptr;
+            fdt->lock_.unlock(irqs);
+            return -1;
+        } 
+        // set up either end of the pipe
+        vnode* pipe = knew<vnode_pipe>();
+        pipe->bb_ = knew<bbuffer>();
+        file* flr = kalloc_file();
+        file* flw = kalloc_file();
+        if (!pipe || !pipe->bb_ || !flw || !flr) {
+            fdt->table_[rfd] = nullptr;
+            fdt->table_[wfd] = nullptr;
+            kfree(flr); kfree(flw);
+            kfree(pipe); kfree(pipe->bb_);
+            fdt->lock_.unlock(irqs);
+            return -1;
+        }
+        pipe->adref();
+        flr->pwrite_ = false; 
+        flr->type_ = file::pipe;
+        flr->vnode_ = pipe;
+        fdt->table_[rfd] = flr;
+        flw->pread_ = false; 
+        flw->type_ = file::pipe;
+        flw->vnode_ = pipe;
+        fdt->table_[wfd] = flw;
+
+        fdt->lock_.unlock(irqs);
+        return (uint64_t) rfd | ((uint64_t) wfd << 32);
+    }
+
+
     case SYSCALL_READ: {
         int fd = regs->reg_rdi;
         uintptr_t addr = regs->reg_rsi;
@@ -527,38 +664,21 @@ uintptr_t proc::syscall(regstate* regs) {
             return E_FAULT;
         }
 
-        auto& kbd = keyboardstate::get();
-        auto irqs = kbd.lock_.lock();
-
-        // mark that we are now reading from the keyboard
-        // (so `q` should not power off)
-        if (kbd.state_ == kbd.boot) {
-            kbd.state_ = kbd.input;
+        fdtable* fdt = this->fdtable_;
+        auto irqsf = fdt->lock_.lock();
+        file* fl = fdt->table_[fd];
+        if (!fl || !fl->pread_) {
+            fdt->lock_.unlock(irqsf);
+            return E_BADF;
         }
+        fl->lock_.lock_noirq();
+        fdt->lock_.unlock_noirq();
+        fl->refs_++;
+        fl->lock_.unlock(irqsf);
+        // make the read call
+        size_t n = fl->vnode_->read(addr, sz, fl);
+        fl->deref();
 
-        // block until a line is available
-        waiter(this).block_until(kbd.wq_, [&] () {
-                return sz == 0 || kbd.eol_ != 0;
-            }, kbd.lock_, irqs);
-
-        // read that line or lines
-        size_t n = 0;
-        while (kbd.eol_ != 0 && n < sz) {
-            if (kbd.buf_[kbd.pos_] == 0x04) {
-                // Ctrl-D means EOF
-                if (n == 0) {
-                    kbd.consume(1);
-                }
-                break;
-            } else {
-                *reinterpret_cast<char*>(addr) = kbd.buf_[kbd.pos_];
-                ++addr;
-                ++n;
-                kbd.consume(1);
-            }
-        }
-
-        kbd.lock_.unlock(irqs);
         return n;
     }
 
@@ -569,24 +689,202 @@ uintptr_t proc::syscall(regstate* regs) {
 
         if (!sz) return 0;
         if (!VALFD(fd)) return E_BADF;
-        if (!vmiter(this, addr).perm_range(PTE_P | PTE_W | PTE_U, sz)) {
+        if (!vmiter(this, addr).perm_range(PTE_P | PTE_U, sz)) {
             return E_FAULT;
         }
 
-        auto& csl = consolestate::get();
-        auto irqs = csl.lock_.lock();
-
-        size_t n = 0;
-        while (n < sz) {
-            int ch = *reinterpret_cast<const char*>(addr);
-            ++addr;
-            ++n;
-            console_printf(0x0F00, "%c", ch);
+        fdtable* fdt = this->fdtable_;
+        auto irqsf = fdt->lock_.lock();
+        file* fl = fdt->table_[fd];
+        if (!fl || !fl->pwrite_) {
+            fdt->lock_.unlock(irqsf);
+            return E_BADF;
         }
+        fl->lock_.lock_noirq();
+        fdt->lock_.unlock_noirq();
+        fl->refs_++;
+        fl->lock_.unlock(irqsf);
+        // make the write call
+        size_t n = fl->vnode_->write(addr, sz, fl);
+        fl->deref();
 
-        csl.lock_.unlock(irqs);
         return n;
     }
+
+    case SYSCALL_EXECV: {
+        uintptr_t pathname = regs->reg_rdi;
+        char** argv = (char**) regs->reg_rsi;
+        int argc = regs->reg_rdx;
+
+        if (vmiter(this, pathname).str_perm(PTE_P | PTE_W | PTE_U) < 0) {
+            return E_FAULT;
+        }
+        x86_64_pagetable* pt = kalloc_pagetable();
+        if (!pt) return -1;
+        regstate new_regs;
+        memfile_loader ml;
+
+        memcpy(&new_regs, regs, sizeof(regstate));
+
+        ml.pagetable_ = pt;
+        ml.mf_ = memfile::initfs_lookup((char*) pathname);
+        int r = load(ml);
+        if (r >= 0) {
+            new_regs.reg_rip = ml.entry_rip_;
+        } else {
+            kfree(pt);
+            return r;
+        }
+
+        x86_64_pagetable* old_pt = pagetable_;
+        pagetable_ = pt;
+        regs_ = &new_regs;
+        regs_->reg_rdi = argc;
+        regs_->reg_rsp = MEMSIZE_VIRTUAL;
+        x86_64_page* stkpg = kallocpage();
+        if (!stkpg) {
+            kfree(pt); kfree(stkpg);
+            return -1;
+        }
+
+        int n = vmiter(this, MEMSIZE_VIRTUAL - PAGESIZE).map(ka2pa(stkpg));
+        int m = vmiter(this, ktext2pa(console)).map(ktext2pa(console), PTE_P | PTE_W | PTE_U);
+        if (n < 0 || m < 0) {
+            kfree(pt); kfree(stkpg);
+            return -1;
+        }
+        size_t n_args = argc + 1;
+        char* new_args[n_args];
+        char* stkoff = ((char*) stkpg) + PAGESIZE - 1;
+
+        log_printf("this will fault %d\n", *(stkoff + PAGESIZE));
+
+        log_printf("the stkpg addr: %p\n", stkpg);
+        // lets copy these arguments broh!
+        for (int i = 0; i < argc; i++) {
+            size_t len = strlen(argv[i]);
+
+            log_printf("the length is %d, so we start at %p\n", len, stkoff - len);
+
+            strcpy(stkoff - len, argv[i]);
+
+            log_printf("copied the first argument at %p\n", stkoff);
+
+            for (int j = 0; j < len + 1; j++) {
+                log_printf("addr: %p and char: %c\n", stkoff - len + j, *(stkoff - len + j));
+            }
+
+            new_args[i] = MEMSIZE_VIRTUAL - PAGESIZE + ((stkoff - len) - (uintptr_t) stkpg);
+
+            log_printf("the usr add should start at %p\n", new_args[i]);
+
+            stkoff -= len + 1;
+
+            log_printf("the last character of the next args is at %p\n", stkoff);
+        }
+        new_args[n_args] = 0x0;
+
+        log_printf("copying new_args into stkpg at addr %p\n", stkoff - sizeof(char*) * (n_args));
+
+        stkoff -= sizeof(char*) * (n_args);
+
+        memcpy(stkoff, new_args, sizeof(char*) * (n_args));
+
+        for (int k = 0; k < n_args; k++) {
+            log_printf("the value in new_args is %p\n", new_args[k]);
+            log_printf("addr: %p, the value in the stkpg is %p\n",
+                (stkoff + (k * sizeof(char*))), *(stkoff + (k * sizeof(char*))));
+        }
+
+        regs_->reg_rsi = (uintptr_t) (MEMSIZE_VIRTUAL - PAGESIZE + (stkoff - (uintptr_t) stkpg));
+
+        log_printf("the val in rsi should be %p\n", MEMSIZE_VIRTUAL - PAGESIZE + (stkoff - (uintptr_t) stkpg));
+
+        regs_->reg_rsp = (uintptr_t) (MEMSIZE_VIRTUAL - PAGESIZE + (stkoff - (uintptr_t) stkpg) - 1);
+
+        log_printf("the val in rsp should be %p\n", (MEMSIZE_VIRTUAL - PAGESIZE + (stkoff - (uintptr_t) stkpg)) - 1);
+
+
+
+        // char* rspoff = stkoff - (8 * (n_args + 1));
+        // regs_->reg_rsi = (uintptr_t) (MEMSIZE_VIRTUAL - PAGESIZE + ((uintptr_t) stkoff - (uintptr_t) stkpg));   
+        // regs_->reg_rsp = (uintptr_t) (MEMSIZE_VIRTUAL - PAGESIZE + ((uintptr_t) rspoff - (uintptr_t) stkpg));
+
+
+
+
+        // addr[i] = (uintptr_t) stkpg + pos;
+        // while (c && *c != '\0') {
+        //     // here we want to copy every character
+        //     log_printf("%c", *c);
+        //     memcpy((void*) (ka2pa(stkpg) + pos), c, 1);
+        //     c++;
+        //     pos++;
+        // }
+
+
+
+       
+
+        // need to copy the args to the stack page
+        // uintptr_t addr[argc + 1];
+        // size_t pos = 0;
+        // for (int i = 0; i < argc; i++) {
+        //     char* c = argv[i];
+        //     char* b = argv[i];
+        //     addr[i] = (uintptr_t) stkpg + pos;
+        //     while (c && *c != '\0') {
+        //         // here we want to copy every character
+        //         log_printf("%c", *c);
+        //         memcpy((void*) (ka2pa(stkpg) + pos), c, 1);
+        //         c++;
+        //         pos++;
+        //     }
+        //     // if (b) {
+        //         // then we want to add the nullterminator
+        //     memcpy((void*) (ka2pa(stkpg) + pos), c, 1);
+        //     // }
+        //     log_printf("\n");
+        //     pos++;
+        // }
+        // while (pos % 8 != 0) {
+        //     pos++;
+        // }
+        // addr[argc + 1] = (uintptr_t) nullptr;
+        // // so make the address right after my strings point to shit
+        // uintptr_t help = (uintptr_t) stkpg + pos;
+        // for (int j = 0; j < argc; j++) {
+        //     memcpy(stkpg + pos, &addr[j], sizeof(uintptr_t));
+        //     pos += sizeof(char*);
+        // }
+        // memcpy(stkpg + pos, &addr[argc + 1], sizeof(uintptr_t));
+        // console_printf("%p\n", (uintptr_t) stkpg);
+        // console_printf("%p\n", help);
+
+        // regs_->reg_rsi = help;
+        // if (pos > PAGESIZE) {
+        //     kfree(pt); kfree(stkpg);
+        //     return -1;
+        // }
+        // addr[argc] = nullptr;
+
+
+        // log_printf("the value of argc: %d\n", argc);
+     
+        set_pagetable(pt);
+
+        for (vmiter it(old_pt); it.low(); it.next()) {
+            if (it.user() && it.present() && it.pa() != ktext2pa(console)) { 
+                kfree((void*) it.ka());
+            }
+        }
+        for (ptiter it(old_pt); it.low(); it.next()) {
+            kfree((void*) pa2ka(it.ptp_pa()));
+        }
+
+        yield_noreturn();
+    }
+
 
     case SYSCALL_READDISKFILE: {
         const char* filename = reinterpret_cast<const char*>(regs->reg_rdi);

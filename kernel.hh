@@ -119,6 +119,7 @@ extern proc* ptable[NPROC];
 extern spinlock ptable_lock;
 extern spinlock familial_lock;
 extern spinlock interrupt_lock;
+extern spinlock memfile_lock;
 #define KTASKSTACK_SIZE  4096
 
 // allocate a new `proc` and call its constructor
@@ -181,6 +182,12 @@ extern int ncpu;
 
 inline cpustate* this_cpu();
 
+// extracted from k-devices to break abstraction
+struct memfile_loader : public proc::loader {
+    memfile* mf_;
+    ssize_t get_page(uint8_t** pg, size_t off) override;
+    void put_page(uint8_t* pg) override;
+};
 
 // yieldstate: callee-saved registers that must be preserved across
 // proc::yield()
