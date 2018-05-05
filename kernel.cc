@@ -7,7 +7,7 @@
 #define INIT_PID     1
 #define WHEEL_SZ     10
 #define VALFD(x)     (x < NFDS && x >= 0) 
-#define OFF2USR(x)   (MEMSIZE_VIRTUAL - (PAGESIZE - x))
+#define OFF2USR(x)   (uintptr_t) (MEMSIZE_VIRTUAL - PAGESIZE + x)
 
 // kernel.cc
 //
@@ -735,7 +735,6 @@ uintptr_t proc::syscall(regstate* regs) {
             kfree(pt);
             return r;
         }
-
         x86_64_pagetable* old_pt = pagetable_;
         pagetable_ = pt;
         regs_ = &new_regs;
@@ -756,57 +755,20 @@ uintptr_t proc::syscall(regstate* regs) {
         size_t n_args = argc + 1;
         char* new_args[n_args];
         char* stkoff = ((char*) stkpg) + PAGESIZE - 1;
-
-        log_printf("this will fault %d\n", *(stkoff + PAGESIZE));
-
-        log_printf("the stkpg addr: %p\n", stkpg);
-        // lets copy these arguments broh!
+        // copy the arguments into the stack page
         for (int i = 0; i < argc; i++) {
             size_t len = strlen(argv[i]);
-
-            log_printf("the length is %d, so we start at %p\n", len, stkoff - len);
-
             strcpy(stkoff - len, argv[i]);
-
-            log_printf("copied the first argument at %p\n", stkoff);
-
-            for (int j = 0; j < len + 1; j++) {
-                log_printf("addr: %p and char: %c\n", stkoff - len + j, *(stkoff - len + j));
-            }
-
             new_args[i] = MEMSIZE_VIRTUAL - PAGESIZE + ((stkoff - len) - (uintptr_t) stkpg);
-
-            log_printf("the usr add should start at %p\n", new_args[i]);
-
             stkoff -= len + 1;
-
-            log_printf("the last character of the next args is at %p\n", stkoff);
         }
-        new_args[n_args] = 0x0;
-
-        log_printf("copying new_args into stkpg at addr %p\n", stkoff - sizeof(char*) * (n_args));
-
+        new_args[n_args] = nullptr;
         stkoff -= sizeof(char*) * (n_args);
-
         memcpy(stkoff, new_args, sizeof(char*) * (n_args));
-
-        for (int k = 0; k < n_args; k++) {
-            log_printf("the value in new_args is %p\n", new_args[k]);
-            log_printf("addr: %p, the value in the stkpg is %p\n",
-                (stkoff + (k * sizeof(char*))), *(stkoff + (k * sizeof(char*))));
-        }
-
-        regs_->reg_rsi = (uintptr_t) (MEMSIZE_VIRTUAL - PAGESIZE + (stkoff - (uintptr_t) stkpg));
-
-        log_printf("the val in rsi should be %p\n", MEMSIZE_VIRTUAL - PAGESIZE + (stkoff - (uintptr_t) stkpg));
-
-        regs_->reg_rsp = (uintptr_t) (MEMSIZE_VIRTUAL - PAGESIZE + (stkoff - (uintptr_t) stkpg) - 1);
-
-        log_printf("the val in rsp should be %p\n", (MEMSIZE_VIRTUAL - PAGESIZE + (stkoff - (uintptr_t) stkpg)) - 1);
-
-     
+        regs_->reg_rsi = OFF2USR(stkoff - (uintptr_t) stkpg);
+        regs_->reg_rsp = OFF2USR(stkoff - (uintptr_t) stkpg) - 1;
+        // set pagetable and then clear old memory
         set_pagetable(pt);
-
         for (vmiter it(old_pt); it.low(); it.next()) {
             if (it.user() && it.present() && it.pa() != ktext2pa(console)) { 
                 kfree((void*) it.ka());
@@ -815,7 +777,6 @@ uintptr_t proc::syscall(regstate* regs) {
         for (ptiter it(old_pt); it.low(); it.next()) {
             kfree((void*) pa2ka(it.ptp_pa()));
         }
-
         yield_noreturn();
     }
 

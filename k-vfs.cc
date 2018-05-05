@@ -31,13 +31,11 @@ void vnode::adref() {
 }
 
 void vnode::deref() {
-	auto irqs = lock_.lock();
 	refs_--;
 	if (!refs_) {
         kfree(bb_);
 		kfree(this);
 	}
-	lock_.unlock(irqs);
 }
 
 void vnode::deref(bool flag) {

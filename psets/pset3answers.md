@@ -8,7 +8,10 @@ Answers to written questions
 
 # ALL
 
-1. Because my design doc was made retroactively, it should reflect all final changes
+1. Not that it will take you long to find, but there is a serious race condition in
+my pipe implementation. Figured I'd give y'all a hand. Sad. 
+
+2. Because my design doc was made retroactively, it should reflect all final changes
 in my VFS implementation. However, as a brief summary: I had to add read and write
 functions for each of my vnode subclasses. I ended up putting a higher load on my
 vnode_pipe because to simplify the read and write code. For example, I put integers
