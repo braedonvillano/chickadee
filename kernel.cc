@@ -339,15 +339,6 @@ void parenting(proc* p, proc* p_init) {
     familial_lock.unlock(irqsp);
 }
 
-// void exit_waking() {
-//     proc* prt = ptable[p->ppid_];
-//     int index = prt->sleepq_;
-//     if (index >= 0) {
-//         prt->sleepq_ = -1;
-//         sleepq_wheel[index].wake_pid(p->ppid_);
-//     }
-// }
-
 void reap_child(proc* p, wpret* wpr) {
     auto irqs = ptable_lock.lock();
     p->child_links_.erase();
