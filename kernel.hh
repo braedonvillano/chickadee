@@ -25,10 +25,18 @@ struct wpret {
     bool exit;
     bool block;
     pid_t pid_c;
+
     wpret() : p(nullptr), stat(0), exit(false), 
-    block(false), pid_c(E_CHILD) {}
-    // exit(false), pid_c(E_CHILD),
-    // block(false), p(nullptr)
+    block(false), pid_c(E_CHILD) {};
+    
+    inline void clear();
+};
+
+inline void wpret::clear() {
+    block = false; 
+    exit = false;
+    p = nullptr;
+    pid_c = E_CHILD;
 };
 
 // used for buddy allocators and pages array

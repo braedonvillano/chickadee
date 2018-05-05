@@ -166,7 +166,7 @@ void kfree(void* ptr) {
 //    Run unit tests on the kalloc system.
 
 void test_kalloc() {
-    // do nothing for now
+    print_struct(1);
 }
 
 // prints memory struct, set info flag to get page details

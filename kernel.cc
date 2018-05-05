@@ -200,8 +200,7 @@ void proc::exception(regstate* regs) {
 //    Waitpid helper to reap a process after exiting
 
 void wait_pid_cond(proc* parent, wpret* wpr, pid_t pid, int opts) {
-    wpr->block = false; wpr->exit = false;
-    wpr->pid_c = E_CHILD; wpr->p = nullptr;
+    wpr->clear();
     auto irqsp = familial_lock.lock();
     proc* p = parent->child_list.front(); 
     if (!p) { familial_lock.unlock(irqsp); return; }
@@ -339,6 +338,15 @@ void parenting(proc* p, proc* p_init) {
     }
     familial_lock.unlock(irqsp);
 }
+
+// void exit_waking() {
+//     proc* prt = ptable[p->ppid_];
+//     int index = prt->sleepq_;
+//     if (index >= 0) {
+//         prt->sleepq_ = -1;
+//         sleepq_wheel[index].wake_pid(p->ppid_);
+//     }
+// }
 
 void reap_child(proc* p, wpret* wpr) {
     auto irqs = ptable_lock.lock();
