@@ -756,15 +756,14 @@ uintptr_t proc::syscall(regstate* regs) {
         size_t n_args = argc + 1;
         char* new_args[n_args];
         char* stkoff = ((char*) stkpg) + PAGESIZE - 1;
-
-        // lets copy these arguments broh!
+        // copy the arguments into the stack page
         for (int i = 0; i < argc; i++) {
             size_t len = strlen(argv[i]);
             strcpy(stkoff - len, argv[i]);
             new_args[i] = MEMSIZE_VIRTUAL - PAGESIZE + ((stkoff - len) - (uintptr_t) stkpg);
             stkoff -= len + 1;
         }
-        new_args[n_args] = 0x0;
+        new_args[n_args] = nullptr;
         stkoff -= sizeof(char*) * (n_args);
         memcpy(stkoff, new_args, sizeof(char*) * (n_args));
         regs_->reg_rsi = OFF2USR(stkoff - (uintptr_t) stkpg);
