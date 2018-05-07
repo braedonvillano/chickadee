@@ -1,5 +1,6 @@
 OBJDIR := obj
 comma = ,
+export LC_ALL = C
 
 # Compiler toolchain
 CCPREFIX =
@@ -147,7 +148,7 @@ always:
 	@:
 
 # These targets don't correspond to files
-.PHONY: all always clean realclean distclean cleanfs \
+.PHONY: all always clean realclean distclean cleanfs fsck \
 	run run-graphic run-console run-monitor \
 	run-gdb run-gdb-graphic run-gdb-console \
 	check-qemu kill \
