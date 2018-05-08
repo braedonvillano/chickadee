@@ -18,6 +18,8 @@ struct bufentry {
     unsigned flags_ = 0;             // flags
     void* buf_ = nullptr;            // memory buffer used for entry
 
+    list_links buf_links_;
+
     enum {
         f_loaded = 1, f_loading = 2, f_dirty = 4
     };
@@ -35,6 +37,7 @@ struct bufcache {
     spinlock lock_;                  // protects all entries' bn_ and ref_
     wait_queue read_wq_;
     bufentry e_[ne];
+    list<bufentry, &bufentry::buf_links_> evict_list_;
 
 
     static inline bufcache& get();

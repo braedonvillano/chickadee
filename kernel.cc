@@ -739,7 +739,6 @@ uintptr_t proc::syscall(regstate* regs) {
         pagetable_ = pt;
         regs_ = &new_regs;
         regs_->reg_rdi = argc;
-        regs_->reg_rsp = MEMSIZE_VIRTUAL;
         x86_64_page* stkpg = kallocpage();
         if (!stkpg) {
             kfree(pt); kfree(stkpg);

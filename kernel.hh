@@ -189,6 +189,10 @@ struct memfile_loader : public proc::loader {
     void put_page(uint8_t* pg) override;
 };
 
+struct diskfile_loader : public proc::loader {
+
+};
+
 // yieldstate: callee-saved registers that must be preserved across
 // proc::yield()
 

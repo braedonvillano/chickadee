@@ -20,10 +20,20 @@ bufentry* bufcache::get_disk_entry(chickadeefs::blocknum_t bn,
     assert(chickadeefs::blocksize == PAGESIZE);
     auto irqs = lock_.lock();
 
+    int j;
+    for (j = 0; j != ne && e_[j].bn_ != emptyblock; ++j) {
+    }
+    if (j == ne) {
+        bufentry* e_buf = evict_list_.pop_front();
+        kfree(e_buf->buf_);
+        e_buf->clear();
+    }
+
     // look for slot containing `bn`
     size_t i;
     for (i = 0; i != ne; ++i) {
         if (e_[i].bn_ == bn) {
+            e_[i].buf_links_.erase();
             break;
         }
     }
@@ -32,17 +42,13 @@ bufentry* bufcache::get_disk_entry(chickadeefs::blocknum_t bn,
     if (i == ne) {
         for (i = 0; i != ne && e_[i].bn_ != emptyblock; ++i) {
         }
-        if (i == ne) {
-            // cache full!
-            lock_.unlock(irqs);
-            log_printf("bufcache: no room for block %u\n", bn);
-            return nullptr;
-        }
         e_[i].bn_ = bn;
+        e_[i].buf_links_.reset();
     }
 
-    // mark reference
+    // mark reference and enforce LRU
     ++e_[i].ref_;
+    evict_list_.push_back(&e_[i]);
 
     // switch lock to entry lock
     e_[i].lock_.lock_noirq();
@@ -115,10 +121,12 @@ void bufcache::put_entry(bufentry* e) {
     if (e) {
         auto irqs = e->lock_.lock();
         --e->ref_;
-        if (e->ref_ == 0) {
+
+        /* if (e->ref_ == 0) {
             kfree(e->buf_);
             e->clear();
-        }
+        } */ 
+
         e->lock_.unlock(irqs);
     }
 }
